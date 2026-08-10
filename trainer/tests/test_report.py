@@ -68,3 +68,50 @@ def test_verdict_is_skip_training_above_the_threshold():
 def test_verdict_is_train_required_below_the_threshold():
     results = [("a", preds(("a", 0.1)))] * 8 + [("b", preds(("z", 0.1)))] * 2
     assert score(results).verdict(threshold=0.90) == "TRAIN_REQUIRED"
+
+
+def test_verdict_boundary_exact_threshold_is_skip_training():
+    # 9 of 10 queries hit top-1 -> top1 == 0.9 exactly (9/10 and the
+    # literal 0.90 round to the identical double), landing precisely on
+    # the default threshold. The boundary must be inclusive.
+    results = [("a", preds(("a", 0.1)))] * 9 + [("b", preds(("z", 0.1)))] * 1
+    report = score(results)
+    assert report.top1 == 0.9
+    assert report.verdict(threshold=0.90) == "SKIP_TRAINING"
+
+
+def test_verdict_just_below_threshold_is_train_required():
+    # 89 of 100 queries hit top-1 -> top1 == 0.89, comfortably below the
+    # 0.90 threshold by a margin far larger than float rounding error.
+    results = [("a", preds(("a", 0.1)))] * 89 + [("b", preds(("z", 0.1)))] * 11
+    report = score(results)
+    assert report.top1 == 0.89
+    assert report.verdict(threshold=0.90) == "TRAIN_REQUIRED"
+
+
+def test_mixed_batch_top1_and_top5_divide_by_total_not_by_answered_queries():
+    # Of 3 queries, only 2 return any prediction at all. If top1/top5 were
+    # (incorrectly) divided by the count of answered queries instead of
+    # `total`, this would silently produce 1/2 == 0.5 instead of 1/3.
+    results = [
+        ("a", preds(("a", 0.1))),  # top-1 and top-5 hit
+        ("b", []),  # no predictions at all -> miss
+        ("c", preds(("z", 0.2))),  # predicted wrong card -> miss
+    ]
+    report = score(results)
+    assert report.total == 3
+    assert abs(report.top1 - (1 / 3)) < 1e-9
+    assert abs(report.top5 - (1 / 3)) < 1e-9
+
+
+def test_mixed_batch_mean_top1_distance_averages_only_over_answered_queries():
+    # Same mixed batch as above. The no-prediction query for "b"
+    # contributes no distance, so the mean is taken over the 2 queries
+    # that did return a prediction (0.1 and 0.2), not over all 3 queries.
+    results = [
+        ("a", preds(("a", 0.1))),
+        ("b", []),
+        ("c", preds(("z", 0.2))),
+    ]
+    report = score(results)
+    assert abs(report.mean_top1_distance - 0.15) < 1e-9
