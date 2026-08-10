@@ -34,7 +34,7 @@ function createWindow(): void {
     webPreferences: { preload: join(import.meta.dirname, '../preload/index.js') },
   })
   if (process.env.ELECTRON_RENDERER_URL) win.loadURL(process.env.ELECTRON_RENDERER_URL)
-  else win.loadFile(join(import.meta.dirname, '../renderer/renderer/index.html'))
+  else win.loadFile(join(import.meta.dirname, '../renderer/index.html'))
 }
 
 app.whenReady().then(() => {

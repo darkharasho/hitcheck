@@ -11,12 +11,12 @@ export default defineConfig({
     },
   },
   renderer: {
-    root: 'src',
+    root: 'src/renderer',
     build: {
       rollupOptions: {
         input: {
           index: 'src/renderer/index.html',
-          overlay: 'src/overlay/overlay.html',
+          overlay: 'src/renderer/overlay/overlay.html',
         },
       },
     },
