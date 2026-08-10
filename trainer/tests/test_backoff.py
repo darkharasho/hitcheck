@@ -1,4 +1,5 @@
 import pytest
+
 from hitcheck_trainer.catalog.backoff import backoff_delays
 
 
