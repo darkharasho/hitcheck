@@ -54,8 +54,20 @@ def sync_catalog(api, conn, page_size: int = 250, on_progress=None) -> int:
 
         if result.cards:
             upsert_cards(conn, result.cards)
-            set_sync_state(conn, "last_page", str(page))
-            set_sync_state(conn, "total_count", str(total_count))
+            # The checkpoint may only advance past a page that was either
+            # fully read (a full page_size batch) or genuinely final (the
+            # store has caught up to total_count). A non-empty page that is
+            # short of page_size *and* leaves the store below total_count is
+            # a truncated read, not the end of the catalog -- sealing the
+            # checkpoint on it would make that page's missing cards
+            # permanently unreachable, since paging is by page number and
+            # nothing later ever re-covers its range. Storing its cards is
+            # still fine and desirable (upsert is idempotent; a re-fetch of
+            # the same page just overwrites them), only the checkpoint must
+            # wait.
+            if len(result.cards) == page_size or card_count(conn) >= total_count:
+                set_sync_state(conn, "last_page", str(page))
+                set_sync_state(conn, "total_count", str(total_count))
             if on_progress:
                 on_progress(card_count(conn), total_count)
 
