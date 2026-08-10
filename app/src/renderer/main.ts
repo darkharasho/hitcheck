@@ -22,3 +22,7 @@ document.getElementById('start')!.addEventListener('click', async () => {
     status.textContent = `capture failed: ${err instanceof Error ? err.message : String(err)}`
   }
 })
+
+document.getElementById('overlay')!.addEventListener('click', () => {
+  ;(window as any).hitcheck.showOverlay({ x: 200, y: 200, width: 520, height: 380 })
+})

@@ -10,5 +10,15 @@ export default defineConfig({
       },
     },
   },
-  renderer: { root: 'src/renderer', build: { rollupOptions: { input: 'src/renderer/index.html' } } },
+  renderer: {
+    root: 'src',
+    build: {
+      rollupOptions: {
+        input: {
+          index: 'src/renderer/index.html',
+          overlay: 'src/overlay/overlay.html',
+        },
+      },
+    },
+  },
 })
