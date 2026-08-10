@@ -29,6 +29,7 @@ packages = ["hitcheck_trainer"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = ["slow: requires downloading model weights"]
 
 [tool.ruff]
 line-length = 100
