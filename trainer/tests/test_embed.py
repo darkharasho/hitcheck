@@ -1,7 +1,9 @@
 import numpy as np
 import pytest
+import torch
 from PIL import Image
 
+from hitcheck_trainer.index.build import normalize
 from hitcheck_trainer.index.embed import Embedder
 
 pytestmark = pytest.mark.slow
@@ -45,3 +47,30 @@ def test_batching_does_not_change_results(embedder):
 
 def test_an_empty_list_returns_an_empty_array(embedder):
     assert embedder.embed([]).shape == (0, embedder.dim)
+
+
+def test_the_descriptor_is_the_cls_token_not_mean_pooled_patches(embedder):
+    """Pins WHICH descriptor embed() returns.
+
+    Shape, unit-norm, reproducibility, batching-invariance and "different
+    images differ" all hold just as well for mean-pooled patch tokens as for
+    the CLS token — none of the other tests can catch the descriptor being
+    silently swapped. This test asserts embed()'s output matches the model's
+    own `pooler_output` for the same input (both L2-normalised), and that it
+    is NOT the mean-pooled patch tokens, which is the specific
+    plausible-but-wrong alternative.
+    """
+    img = sample(7)
+    out = embedder.embed([img])[0]
+
+    with torch.inference_mode():
+        inputs = embedder._processor(images=[img.convert("RGB")], return_tensors="pt").to(
+            embedder.device
+        )
+        outputs = embedder._model(**inputs)
+
+    pooled = normalize(outputs.pooler_output.float().cpu().numpy())[0]
+    mean_patches = normalize(outputs.last_hidden_state[:, 1:].mean(dim=1).float().cpu().numpy())[0]
+
+    assert np.allclose(out, pooled, atol=1e-5)
+    assert not np.allclose(out, mean_patches, atol=1e-3)
