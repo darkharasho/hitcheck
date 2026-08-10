@@ -1,10 +1,27 @@
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, session, desktopCapturer } from 'electron'
 import { join } from 'node:path'
 import { registerIpc } from './ipc'
 
 // Wayland/PipeWire screen capture. Harmless where already default.
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('enable-features', 'WebRTCPipeWireCapturer')
+}
+
+function registerDisplayMediaHandler(): void {
+  session.defaultSession.setDisplayMediaRequestHandler(
+    (_request, callback) => {
+      desktopCapturer
+        .getSources({ types: ['window', 'screen'] })
+        .then(sources => {
+          if (sources.length === 0) return callback({})
+          callback({ video: sources[0] })
+        })
+        .catch(() => callback({}))
+    },
+    // Prefer the compositor's own picker where available. On Wayland this
+    // is what drives the xdg-desktop-portal handshake.
+    { useSystemPicker: true },
+  )
 }
 
 function createWindow(): void {
@@ -19,6 +36,7 @@ function createWindow(): void {
 
 app.whenReady().then(() => {
   registerIpc()
+  registerDisplayMediaHandler()
   createWindow()
 })
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
