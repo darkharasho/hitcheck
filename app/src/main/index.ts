@@ -10,7 +10,7 @@ function createWindow(): void {
   const win = new BrowserWindow({
     width: 1100,
     height: 720,
-    webPreferences: { preload: join(import.meta.dirname, '../preload/index.js') },
+    webPreferences: { preload: join(import.meta.dirname, '../preload/index.mjs') },
   })
   if (process.env.ELECTRON_RENDERER_URL) win.loadURL(process.env.ELECTRON_RENDERER_URL)
   else win.loadFile(join(import.meta.dirname, '../renderer/index.html'))

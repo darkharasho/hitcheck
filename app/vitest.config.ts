@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['src/**/*.test.ts'],
+    pool: 'forks',
     poolOptions: {
       forks: { minForks: 1, maxForks: 2 },
     },
