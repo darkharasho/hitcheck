@@ -87,3 +87,28 @@ def test_requests_the_expected_page_and_size():
     CatalogApi(transport, sleep=lambda _: None).fetch_page(7, page_size=250)
     url = transport.calls[0][0]
     assert "page=7" in url and "pageSize=250" in url
+
+
+def test_retries_a_200_with_no_body_then_succeeds():
+    transport = FakeTransport([(200, None), (200, make_page())])
+    api = CatalogApi(transport, sleep=lambda _: None)
+    page = api.fetch_page(1)
+    assert len(page.cards) == 2
+    assert len(transport.calls) == 2
+
+
+def test_raises_after_exhausting_attempts_on_repeated_200_with_no_body():
+    transport = FakeTransport([(200, None)] * 3)
+    api = CatalogApi(transport, max_attempts=3, sleep=lambda _: None)
+    with pytest.raises(CatalogApiError):
+        api.fetch_page(1)
+    assert len(transport.calls) == 3
+
+
+@pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
+def test_retries_each_retryable_server_error_then_succeeds(status):
+    transport = FakeTransport([(status, None), (200, make_page())])
+    api = CatalogApi(transport, sleep=lambda _: None)
+    page = api.fetch_page(1)
+    assert len(page.cards) == 2
+    assert len(transport.calls) == 2

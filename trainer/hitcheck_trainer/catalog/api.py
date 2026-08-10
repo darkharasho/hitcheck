@@ -51,7 +51,12 @@ class CatalogApi:
                     page=body.get("page", page),
                     total_count=body.get("totalCount", 0),
                 )
-            if status not in RETRYABLE:
+            # A 200 with no/junk body is a malformed response, not a real
+            # success or a hard failure. Treat it the same as a connection
+            # failure (status 0) rather than falling through to the "not
+            # retryable" branch, which would fail fast on the harshest path.
+            is_retryable = status in RETRYABLE or (status == 200 and body is None)
+            if not is_retryable:
                 break
             if attempt < len(delays):
                 self._sleep(delays[attempt])
