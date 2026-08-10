@@ -43,3 +43,27 @@ starting over. A non-zero exit means metadata is short of the catalog
 total, or one or more images failed to download; the printed summary
 says which and by how much. See
 `docs/verification/2026-08-10-m1-catalog.md` for a real run's results.
+
+## M2 gate: zero-shot retrieval evaluation
+
+Answers whether off-the-shelf DINOv2 embeddings identify a degraded card
+crop against the full catalog closely enough that no custom identification
+model needs training. Builds a gallery index from clean catalog images,
+then queries it with those same images run through a seeded degradation
+pipeline (perspective warp, glare, motion blur, JPEG artifacts).
+
+```bash
+cd trainer
+uv run python -m hitcheck_trainer.eval.synthetic --sample 500 --strength 1.0
+```
+
+Gallery embedding is chunked (`--chunk`, default 256 images decoded at
+once) so the whole ~20k-image catalog is never held in memory at once — see
+`hitcheck_trainer/eval/synthetic.py`'s module docstring for why that matters.
+Pass `--reuse-index` on a rerun to load the already-built gallery index
+(`data/index/cards.bin`) instead of re-embedding the full catalog; only the
+degraded queries get re-embedded.
+
+This is a synthetic upper bound, not a measurement on real stream frames —
+see `docs/verification/2026-08-10-m2-zeroshot.md` for the full results and
+the resulting `TRAIN_REQUIRED`/`SKIP_TRAINING` decision.
