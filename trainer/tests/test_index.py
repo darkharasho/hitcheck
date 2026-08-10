@@ -97,5 +97,115 @@ def test_sidecar_ids_file_matches_input_order(tmp_path):
     build_index(vecs, ids, path)
 
     with open(f"{path}.ids.json") as fh:
-        saved_ids = json.load(fh)
-    assert saved_ids == ids
+        saved = json.load(fh)
+    assert saved["ids"] == ids
+
+
+# --- Fix round 1: load() must not trust an unverified sidecar -------------
+#
+# hnswlib's load_index(path, max_elements=N) treats max_elements as a future
+# growth ceiling, not a validation of what's actually stored — passing a
+# smaller or larger value than the real element count is silently ignored.
+# So `.ids.json` and the `.bin` file can drift apart (fewer/more ids than
+# vectors, or a same-length sidecar from a completely different build) with
+# nothing catching it, and every query after that silently returns the wrong
+# card. These tests pin down that CardIndex.load() detects and rejects all
+# of that instead of mismapping silently.
+
+
+def test_sidecar_with_fewer_ids_than_index_raises_descriptive_error(tmp_path):
+    import json
+
+    vecs = vectors(n=5)
+    ids = [f"c-{i}" for i in range(5)]
+    path = str(tmp_path / "idx.bin")
+    build_index(vecs, ids, path)
+
+    sidecar_path = f"{path}.ids.json"
+    with open(sidecar_path) as fh:
+        sidecar = json.load(fh)
+    sidecar["ids"] = sidecar["ids"][:3]  # fewer ids than the index actually holds
+    with open(sidecar_path, "w") as fh:
+        json.dump(sidecar, fh)
+
+    with pytest.raises(ValueError, match="mismatch"):
+        CardIndex.load(path, dim=vecs.shape[1])
+
+
+def test_sidecar_with_more_ids_than_index_raises_descriptive_error(tmp_path):
+    import json
+
+    vecs = vectors(n=5)
+    ids = [f"c-{i}" for i in range(5)]
+    path = str(tmp_path / "idx.bin")
+    build_index(vecs, ids, path)
+
+    sidecar_path = f"{path}.ids.json"
+    with open(sidecar_path) as fh:
+        sidecar = json.load(fh)
+    sidecar["ids"] = sidecar["ids"] + ["extra-1", "extra-2"]  # more ids than vectors
+    with open(sidecar_path, "w") as fh:
+        json.dump(sidecar, fh)
+
+    with pytest.raises(ValueError, match="mismatch"):
+        CardIndex.load(path, dim=vecs.shape[1])
+
+
+def test_same_length_sidecar_from_different_build_is_rejected(tmp_path):
+    """The dangerous case: count matches, but the sidecar belongs to a
+    different build entirely. A count check alone can't catch this — only a
+    content fingerprint can."""
+    import shutil
+
+    vecs_a = vectors(n=5, seed=1)
+    ids_a = [f"a-{i}" for i in range(5)]
+    path_a = str(tmp_path / "a.bin")
+    build_index(vecs_a, ids_a, path_a)
+
+    vecs_b = vectors(n=5, seed=2)
+    ids_b = [f"b-{i}" for i in range(5)]
+    path_b = str(tmp_path / "b.bin")
+    build_index(vecs_b, ids_b, path_b)
+
+    # Swap in build B's same-length sidecar next to build A's index.
+    shutil.copy(f"{path_b}.ids.json", f"{path_a}.ids.json")
+
+    with pytest.raises(ValueError, match="mismatch"):
+        CardIndex.load(path_a, dim=vecs_a.shape[1])
+
+
+def test_a_crash_between_index_and_sidecar_writes_does_not_leave_a_silently_stale_pair(
+    tmp_path, monkeypatch
+):
+    """Simulate a process crash between the index rename and the sidecar
+    rename during a rebuild. The .bin at `path` ends up belonging to the new
+    build while the sidecar is still the old build's — same length, wrong
+    pairing. Loading must refuse rather than silently mis-map card ids."""
+    import hitcheck_trainer.index.build as build_mod
+
+    vecs_a = vectors(n=5, seed=1)
+    ids_a = [f"a-{i}" for i in range(5)]
+    path = str(tmp_path / "idx.bin")
+    build_index(vecs_a, ids_a, path)  # first, complete build
+
+    vecs_b = vectors(n=5, seed=2)
+    ids_b = [f"b-{i}" for i in range(5)]
+
+    real_replace = build_mod.os.replace
+    calls = {"n": 0}
+
+    def flaky_replace(src, dst):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("simulated crash between index and sidecar rename")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(build_mod.os, "replace", flaky_replace)
+
+    with pytest.raises(OSError):
+        build_index(vecs_b, ids_b, path)  # crashes after index rename, before sidecar rename
+
+    monkeypatch.undo()
+
+    with pytest.raises(ValueError, match="mismatch"):
+        CardIndex.load(path, dim=vecs_a.shape[1])
