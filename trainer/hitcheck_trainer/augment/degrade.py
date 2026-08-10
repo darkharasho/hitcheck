@@ -9,11 +9,55 @@ runs are reproducible.
 import io
 
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 from PIL import Image, ImageDraw, ImageFilter
 
 
 def _rng(seed: int) -> np.random.Generator:
     return np.random.default_rng(seed)
+
+
+def _line_kernel(size: int, angle: float) -> np.ndarray:
+    """Rasterize a normalized 1-pixel-wide line kernel at ``angle`` radians.
+
+    Anti-aliased via bilinear splatting so the kernel isn't just a jagged
+    stair-step at non-45-degree angles.
+    """
+    half = size // 2
+    kernel = np.zeros((size, size), dtype=np.float64)
+    n_samples = size * 4
+    dx, dy = np.cos(angle), np.sin(angle)
+    for t in np.linspace(-half, half, n_samples):
+        px, py = t * dx + half, t * dy + half
+        x0, y0 = int(np.floor(px)), int(np.floor(py))
+        wx, wy = px - x0, py - y0
+        for xi, yi, w in (
+            (x0, y0, (1 - wx) * (1 - wy)),
+            (x0 + 1, y0, wx * (1 - wy)),
+            (x0, y0 + 1, (1 - wx) * wy),
+            (x0 + 1, y0 + 1, wx * wy),
+        ):
+            if 0 <= xi < size and 0 <= yi < size:
+                kernel[yi, xi] += w
+    total = kernel.sum()
+    if total > 0:
+        kernel /= total
+    return kernel
+
+
+def _convolve_same(arr: np.ndarray, kernel: np.ndarray) -> np.ndarray:
+    """2D convolution per channel, edge-padded to preserve size.
+
+    Pure numpy (no scipy in the venv). PIL's ``ImageFilter.Kernel`` only
+    supports 3x3/5x5 on the installed Pillow (12.3.0; kernels >=7x7 raise
+    "bad kernel size"), so a directional kernel of the size needed here
+    can't go through PIL and is done by hand via a sliding-window view.
+    """
+    k = kernel.shape[0]
+    pad = k // 2
+    padded = np.pad(arr, ((pad, pad), (pad, pad), (0, 0)), mode="edge")
+    windows = sliding_window_view(padded, (k, k), axis=(0, 1))
+    return np.tensordot(windows, kernel, axes=([3, 4], [0, 1]))
 
 
 def perspective_warp(image: Image.Image, seed: int, strength: float) -> Image.Image:
@@ -63,15 +107,32 @@ def add_glare(image: Image.Image, seed: int, strength: float) -> Image.Image:
 
 
 def motion_blur(image: Image.Image, seed: int, strength: float) -> Image.Image:
-    """Simulate the seller's hand moving while the frame is exposed."""
+    """Simulate the seller's hand moving while the frame is exposed.
+
+    Directional (not a symmetric Gaussian): real hand-shake smears detail
+    along one axis of movement while leaving the perpendicular axis
+    comparatively sharp. Angle and kernel size are seeded from
+    ``seed + 2``, following the ``seed`` / ``seed + 1`` convention used by
+    ``perspective_warp`` and ``add_glare``.
+    """
     if strength <= 0:
         return image.convert("RGB")
-    radius = 0.4 + 1.4 * strength
-    return image.convert("RGB").filter(ImageFilter.GaussianBlur(radius=radius))
+    rng = _rng(seed + 2)
+    angle = rng.uniform(0, np.pi)
+    k = int(3 + 12 * strength) | 1
+    kernel = _line_kernel(k, angle)
+    arr = np.array(image.convert("RGB"), dtype=np.float64)
+    blurred = _convolve_same(arr, kernel)
+    return Image.fromarray(np.clip(blurred, 0, 255).astype(np.uint8))
 
 
 def jpeg_artifacts(image: Image.Image, seed: int, strength: float) -> Image.Image:
-    """Simulate streaming codec compression."""
+    """Simulate streaming codec compression.
+
+    ``seed`` is accepted for interface consistency with the other
+    transforms but unused: JPEG re-encoding at a given quality is already
+    deterministic, so there is nothing here to seed.
+    """
     if strength <= 0:
         return image.convert("RGB")
     quality = int(max(8, 60 - 45 * min(strength, 1.0)))
