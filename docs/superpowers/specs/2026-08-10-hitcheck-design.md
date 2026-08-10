@@ -185,11 +185,21 @@ is the user bidding real money on a confidently wrong match.
 
 All sources sit behind a single `PriceSource` interface.
 
-**Raw / ungraded — pokemontcg.io.** Free API key, 1,000 requests/day, and it
-embeds TCGplayer prices in every card response (updated hourly) plus Cardmarket
-in EUR and 1/7/30-day trend averages. This satisfies the TCGplayer requirement
-without the partner-approval gauntlet. The same API also serves the card
-database and images that `catalog/` needs — one dependency, two jobs.
+**Raw / ungraded — pokemontcg.io.** Free API key, 1,000 requests/day, and every
+card response carries TCGplayer prices at `tcgplayer.prices.<finish>.{low,mid,
+high,market,directLow}` plus Cardmarket in EUR. `tcgplayer.updatedAt` is a date
+string — pricing refreshes **daily**, not hourly. This satisfies the TCGplayer
+requirement without the partner-approval gauntlet. The same API also serves the
+card database and images that `catalog/` needs — one dependency, two jobs.
+
+**Reliability caveat (measured 2026-08-10).** Eight sequential requests to
+`/v2/cards` returned a 50% failure rate (`500, 200, 500, 200, 200, 000, 500,
+200`), and `/v2/sets` and `/v2/cards/{id}` failed on every attempt. The catalog
+sync therefore treats failure as the common case: retry with backoff, checkpoint
+every page, resume rather than restart, and derive set metadata from the `set`
+object embedded in each card rather than calling `/v2/sets`. If this rate
+persists, mirroring the catalog becomes necessary before M4 depends on the API
+at runtime.
 
 **Graded — eBay Browse API (free tier) initially.** Returns *active* listings,
 not sold ones. Asking prices skew high because unsold optimists sit at the top
