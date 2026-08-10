@@ -1,3 +1,5 @@
-import { contextBridge } from 'electron'
+import { contextBridge, ipcRenderer } from 'electron'
 
-contextBridge.exposeInMainWorld('hitcheck', {})
+contextBridge.exposeInMainWorld('hitcheck', {
+  listSources: () => ipcRenderer.invoke('hitcheck:listSources'),
+})

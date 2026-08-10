@@ -1,5 +1,6 @@
 import { app, BrowserWindow } from 'electron'
 import { join } from 'node:path'
+import { registerIpc } from './ipc'
 
 // Wayland/PipeWire screen capture. Harmless where already default.
 if (process.platform === 'linux') {
@@ -16,5 +17,8 @@ function createWindow(): void {
   else win.loadFile(join(import.meta.dirname, '../renderer/index.html'))
 }
 
-app.whenReady().then(createWindow)
+app.whenReady().then(() => {
+  registerIpc()
+  createWindow()
+})
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
