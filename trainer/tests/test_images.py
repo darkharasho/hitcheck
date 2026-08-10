@@ -116,9 +116,58 @@ def test_a_zero_byte_file_on_disk_is_not_treated_as_downloaded(tmp_path):
         assert fh.read() == PNG
 
 
-def test_no_leftover_part_file_after_a_successful_download(tmp_path):
+def test_no_temp_file_litter_after_a_successful_download(tmp_path):
+    """The .part file used during the write does not linger afterward.
+
+    This only checks for absence of litter; it says nothing about *how*
+    the file got there. See test_writes_via_a_temp_file_and_atomic_rename
+    for the actual crash-safety regression guard.
+    """
     got, _ = download_images(
         [("pl3-1", "http://x/1.png")], str(tmp_path), lambda url: (200, PNG),
     )
     assert got == 1
     assert not os.path.exists(image_path(str(tmp_path), "pl3-1") + ".part")
+
+
+def test_writes_via_a_temp_file_and_atomic_rename(tmp_path, monkeypatch):
+    """Pins the crash-safety contract: writes land at `.part` first, and
+    the final path is only ever produced by os.replace, never by a
+    direct write. Without this, a killed process could leave a
+    half-written file at the final path.
+
+    This is a regression guard, not just an absence check: swap the
+    implementation to `open(path, "wb").write(body)` (skipping the
+    temp file and rename) and this test fails, because it asserts the
+    destination path is never opened for writing directly and that the
+    rename is what produces it.
+    """
+    path = image_path(str(tmp_path), "pl3-1")
+    tmp = path + ".part"
+    events = []
+
+    real_open = open
+
+    def tracking_open(file, mode="r", *args, **kwargs):
+        if str(file) in (path, tmp) and "w" in mode:
+            events.append(("open", str(file)))
+        return real_open(file, mode, *args, **kwargs)
+
+    real_replace = os.replace
+
+    def tracking_replace(src, dst):
+        events.append(("replace", str(src), str(dst)))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr("builtins.open", tracking_open)
+    monkeypatch.setattr("hitcheck_trainer.catalog.images.os.replace", tracking_replace)
+
+    got, _ = download_images([("pl3-1", "http://x/1.png")], str(tmp_path), lambda url: (200, PNG))
+
+    assert got == 1
+    # the destination path must never be opened directly for writing
+    assert ("open", path) not in events
+    # the temp file is opened for writing exactly once, before the rename
+    assert events == [("open", tmp), ("replace", tmp, path)]
+    with open(path, "rb") as fh:
+        assert fh.read() == PNG
