@@ -8,20 +8,23 @@ if (process.platform === 'linux') {
 }
 
 function registerDisplayMediaHandler(): void {
-  session.defaultSession.setDisplayMediaRequestHandler(
-    (_request, callback) => {
-      desktopCapturer
-        .getSources({ types: ['window', 'screen'] })
-        .then(sources => {
-          if (sources.length === 0) return callback({})
-          callback({ video: sources[0] })
-        })
-        .catch(() => callback({}))
-    },
-    // Prefer the compositor's own picker where available. On Wayland this
-    // is what drives the xdg-desktop-portal handshake.
-    { useSystemPicker: true },
-  )
+  // On Wayland, the xdg-desktop-portal handshake is driven by the
+  // WebRTCPipeWireCapturer command-line switch enabled above, combined with
+  // this desktopCapturer.getSources() call — that's what triggers PipeWire
+  // and surfaces the portal's own picker dialog to the user.
+  //
+  // Note: `useSystemPicker` (Electron's built-in system-picker option) is
+  // experimental and macOS 15+ only per Electron's type declarations; it has
+  // no effect on Linux/Wayland, so it is intentionally omitted here.
+  session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
+    desktopCapturer
+      .getSources({ types: ['window', 'screen'] })
+      .then(sources => {
+        if (sources.length === 0) return callback({})
+        callback({ video: sources[0] })
+      })
+      .catch(() => callback({}))
+  })
 }
 
 function createWindow(): void {
