@@ -49,7 +49,7 @@ def upsert_cards(conn: sqlite3.Connection, cards: list[dict]) -> int:
         rows.append(
             (
                 card["id"],
-                card.get("name", ""),
+                card.get("name") or "",
                 card.get("number"),
                 card.get("rarity"),
                 card.get("supertype"),
@@ -62,21 +62,25 @@ def upsert_cards(conn: sqlite3.Connection, cards: list[dict]) -> int:
                 json.dumps(card, separators=(",", ":")),
             )
         )
-    conn.executemany(
-        """
-        INSERT INTO cards (id, name, number, rarity, supertype, artist,
-                           set_id, set_name, set_series, set_release,
-                           image_small, raw_json)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(id) DO UPDATE SET
-            name=excluded.name, number=excluded.number, rarity=excluded.rarity,
-            supertype=excluded.supertype, artist=excluded.artist,
-            set_id=excluded.set_id, set_name=excluded.set_name,
-            set_series=excluded.set_series, set_release=excluded.set_release,
-            image_small=excluded.image_small, raw_json=excluded.raw_json
-        """,
-        rows,
-    )
+    try:
+        conn.executemany(
+            """
+            INSERT INTO cards (id, name, number, rarity, supertype, artist,
+                               set_id, set_name, set_series, set_release,
+                               image_small, raw_json)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET
+                name=excluded.name, number=excluded.number, rarity=excluded.rarity,
+                supertype=excluded.supertype, artist=excluded.artist,
+                set_id=excluded.set_id, set_name=excluded.set_name,
+                set_series=excluded.set_series, set_release=excluded.set_release,
+                image_small=excluded.image_small, raw_json=excluded.raw_json
+            """,
+            rows,
+        )
+    except Exception:
+        conn.rollback()
+        raise
     conn.commit()
     return len(rows)
 

@@ -1,3 +1,7 @@
+import sqlite3
+
+import pytest
+
 from hitcheck_trainer.catalog.db import (
     all_card_images,
     card_count,
@@ -22,9 +26,12 @@ CARD = {
 
 def test_open_db_is_idempotent(tmp_path):
     path = str(tmp_path / "c.sqlite")
-    open_db(path).close()
     conn = open_db(path)
-    assert card_count(conn) == 0
+    upsert_cards(conn, [CARD])
+    conn.close()
+    conn = open_db(path)
+    assert card_count(conn) == 1
+    assert get_card(conn, "pl3-1") is not None
 
 
 def test_upsert_inserts_a_card(tmp_path):
@@ -72,6 +79,36 @@ def test_all_card_images_skips_cards_without_images(tmp_path):
     conn = open_db(str(tmp_path / "c.sqlite"))
     upsert_cards(conn, [CARD, {"id": "x-1", "name": "Bare"}])
     assert all_card_images(conn) == [("pl3-1", "https://images.pokemontcg.io/pl3/1.png")]
+
+
+def test_explicit_null_name_stores_as_empty_string(tmp_path):
+    conn = open_db(str(tmp_path / "c.sqlite"))
+    assert upsert_cards(conn, [{"id": "n-1", "name": None}]) == 1
+    row = get_card(conn, "n-1")
+    assert row["name"] == ""
+
+
+def test_failed_batch_rolls_back_entirely(tmp_path):
+    conn = open_db(str(tmp_path / "c.sqlite"))
+    # Force a genuine sqlite3.IntegrityError on the second row of a batch,
+    # independent of any particular column's NOT NULL guard, via a trigger
+    # that poisons inserts for a specific id.
+    conn.execute(
+        "CREATE TRIGGER poison_b1 BEFORE INSERT ON cards "
+        "WHEN NEW.id = 'b-1' BEGIN SELECT RAISE(ABORT, 'poison row'); END"
+    )
+    good = {"id": "g-1", "name": "Good"}
+    bad = {"id": "b-1", "name": "Bad"}
+
+    with pytest.raises(sqlite3.IntegrityError):
+        upsert_cards(conn, [good, bad])
+    assert get_card(conn, "g-1") is None
+
+    # Reproduce the reviewer's exact repro: a later, unrelated successful
+    # upsert_cards call must not silently commit the rolled-back row.
+    upsert_cards(conn, [{"id": "z-1", "name": "Unrelated"}])
+    assert get_card(conn, "g-1") is None
+    assert get_card(conn, "z-1") is not None
 
 
 def test_sync_state_roundtrips(tmp_path):
