@@ -11,7 +11,7 @@ describe('slugify', () => {
   })
 
   it('drops typographic apostrophes too', () => {
-    expect(slugify("Farfetch'd")).toBe('farfetchd')
+    expect(slugify('Farfetch\u2019d')).toBe('farfetchd')
   })
 
   it('strips accents', () => {

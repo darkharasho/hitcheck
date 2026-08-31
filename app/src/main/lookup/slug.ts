@@ -19,7 +19,7 @@ export function slugify(value: string): string {
     .replace(/&/g, ' and ')
     // Apostrophes vanish rather than becoming hyphens: PriceCharting slugs
     // "Team Rocket's Meowth" as team-rockets-meowth, not team-rocket-s-meowth.
-    .replace(/['']/g, '')
+    .replace(/['\u2019]/g, '')
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
 }
