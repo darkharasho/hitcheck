@@ -1,6 +1,7 @@
 import { app, BrowserWindow, session, desktopCapturer } from 'electron'
 import { join } from 'node:path'
 import { registerIpc } from './ipc'
+import { createLookupWindow } from './lookup/window'
 
 // Wayland/PipeWire screen capture. Harmless where already default.
 if (process.platform === 'linux') {
@@ -41,5 +42,6 @@ app.whenReady().then(() => {
   registerIpc()
   registerDisplayMediaHandler()
   createWindow()
+  createLookupWindow()
 })
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
