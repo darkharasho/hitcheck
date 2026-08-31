@@ -1,7 +1,16 @@
 import { defineConfig } from 'electron-vite'
 
 export default defineConfig({
-  main: { build: { rollupOptions: { input: 'src/main/index.ts' } } },
+  main: {
+    build: {
+      rollupOptions: {
+        input: {
+          index: 'src/main/index.ts',
+          'lookup/window': 'src/main/lookup/window.ts',
+        },
+      },
+    },
+  },
   preload: {
     build: {
       rollupOptions: {
