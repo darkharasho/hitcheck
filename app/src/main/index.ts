@@ -61,13 +61,17 @@ app.whenReady().then(() => {
   registerDisplayMediaHandler()
   createWindow()
   createLookupWindow()
+
+  // macOS convention: the app stays alive with no main window, so clicking the
+  // dock icon must be able to bring one back. Without this, closing the main
+  // window on darwin leaves the user with only the always-open lookup window --
+  // a stray third-party price page and no route back into HitCheck.
+  //
+  // Registered inside whenReady, not at module scope: on macOS 'activate' can
+  // fire for a first launch before 'ready', and constructing a BrowserWindow
+  // before the app is ready throws in the main process.
+  app.on('activate', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) createWindow()
+  })
 })
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
-
-// macOS convention: the app stays alive with no main window, so clicking the
-// dock icon must be able to bring one back. Without this, closing the main
-// window on darwin leaves the user with only the always-open lookup window --
-// a stray third-party price page and no route back into HitCheck.
-app.on('activate', () => {
-  if (!mainWindow || mainWindow.isDestroyed()) createWindow()
-})
