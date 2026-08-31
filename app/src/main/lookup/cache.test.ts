@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { createResolvedCache, resolvedDestinations } from './cache'
+import { createResolvedCache, resolvedDestinations, shouldCacheResolved } from './cache'
 import type { Destination } from './router'
 
 const dest = (url: string, kind: Destination['kind'] = 'product'): Destination =>
@@ -66,5 +66,28 @@ describe('resolvedDestinations', () => {
     const given = [dest('https://prices.pokemontcg.io/tcgplayer/base1-4')]
     resolvedDestinations('base1-4', given, cache)
     expect(given).toHaveLength(1)
+  })
+})
+
+describe('shouldCacheResolved', () => {
+  it('returns false when the landed URL is identical to what was loaded', () => {
+    expect(shouldCacheResolved(
+      'https://prices.pokemontcg.io/tcgplayer/base1-4',
+      'https://prices.pokemontcg.io/tcgplayer/base1-4',
+    )).toBe(false)
+  })
+
+  it('returns true when the landed URL genuinely differs', () => {
+    expect(shouldCacheResolved(
+      'https://prices.pokemontcg.io/tcgplayer/base1-4',
+      'https://www.tcgplayer.com/product/42382',
+    )).toBe(true)
+  })
+
+  it('treats a trailing-slash-only difference as a genuine difference', () => {
+    expect(shouldCacheResolved(
+      'https://www.tcgplayer.com/product/42382',
+      'https://www.tcgplayer.com/product/42382/',
+    )).toBe(true)
   })
 })

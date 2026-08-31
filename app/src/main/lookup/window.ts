@@ -1,5 +1,5 @@
 import { BrowserWindow } from 'electron'
-import { createResolvedCache, resolvedDestinations } from './cache'
+import { createResolvedCache, resolvedDestinations, shouldCacheResolved } from './cache'
 import { classifyLanding } from './outcome'
 import type { Destination } from './router'
 
@@ -60,7 +60,7 @@ export async function navigateLookup(
     win.showInactive()
     const landed = win.webContents.getURL()
     if (classifyLanding(landed) === 'product') {
-      resolved.set(cardId, landed)
+      if (shouldCacheResolved(destination.url, landed)) resolved.set(cardId, landed)
       return
     }
   }

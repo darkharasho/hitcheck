@@ -33,6 +33,25 @@ export function createResolvedCache(limit: number = DEFAULT_LIMIT): ResolvedCach
   }
 }
 
+/**
+ * Is the landed URL worth caching against the destination that was loaded?
+ *
+ * Guards against caching a redirector URL that never actually redirected: if
+ * `loadURL`'s promise resolves before the third-party redirect settles,
+ * `classifyLanding` sees the un-redirected URL and (correctly, by its own
+ * rules) calls it a product page. Caching that URL would poison the cache
+ * with the exact address we are trying to stop hitting. A plain equality
+ * check catches it for free -- no redirect happened, so nothing changed.
+ *
+ * Deliberately no URL normalization: a trailing-slash-only difference still
+ * counts as "differs" and is cached. The window navigated somewhere; treating
+ * that as a non-event would need a rule for what counts as equivalent, and
+ * that is more surface area than this guard is trying to own.
+ */
+export function shouldCacheResolved(loadedUrl: string, landedUrl: string): boolean {
+  return landedUrl !== loadedUrl
+}
+
 /** Put a previously-resolved URL at the front, keeping the rest as fallbacks. */
 export function resolvedDestinations(
   cardId: string,
