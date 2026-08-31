@@ -87,13 +87,18 @@ churn-prone slug rules under fast unit tests.
 
 ### TCGplayer singles — already solved
 
-pokemontcg.io returns `tcgplayer.url`, an exact product deep link, in every card
-payload. `catalog/db.py` already persists the untouched payload in `raw_json`,
-so this is on disk for all 20,427 cards today.
+pokemontcg.io returns `tcgplayer.url` in every card payload — verified present
+for 20,213 of 20,479 cards. It is **not** a direct product link: it is
+`https://prices.pokemontcg.io/tcgplayer/<card-id>`, a redirector that lands on
+the real product page carrying a third party's affiliate and tracking
+parameters (`utm_campaign=Scrydex`, `irclickid=...`). The bare
+`https://www.tcgplayer.com/product/<id>` resolves fine without them.
 
-**Migration:** add a `tcgplayer_url` column and backfill from `raw_json`. No
-re-sync, no additional API calls. Cards without the field fall back to a
-constructed TCGplayer search from name + set.
+Consequence: every lookup through the redirector is logged by a third party and
+credits them for any resulting purchase. The resolved bare URL is therefore
+cached per card on first use, so the redirector is hit at most once per card
+rather than once per lot. Cards without the field (266 of them) fall back to a
+constructed TCGplayer search.
 
 ### PriceCharting slabs — construct, and let their site catch misses
 

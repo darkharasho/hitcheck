@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS cards (
     set_series    TEXT,
     set_release   TEXT,
     image_small   TEXT,
+    tcgplayer_url TEXT,
     raw_json      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_cards_set ON cards(set_id);
@@ -33,11 +34,25 @@ CREATE TABLE IF NOT EXISTS sync_state (
 """
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after a database was first created.
+
+    `CREATE TABLE IF NOT EXISTS` silently does nothing on an existing table,
+    so new columns must be added here or a synced catalog would keep the old
+    schema forever.
+    """
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(cards)")}
+    if "tcgplayer_url" not in have:
+        conn.execute("ALTER TABLE cards ADD COLUMN tcgplayer_url TEXT")
+        conn.commit()
+
+
 def open_db(path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
     conn.commit()
+    _migrate(conn)
     return conn
 
 
@@ -46,6 +61,7 @@ def upsert_cards(conn: sqlite3.Connection, cards: list[dict]) -> int:
     for card in cards:
         card_set = card.get("set") or {}
         images = card.get("images") or {}
+        tcgplayer = card.get("tcgplayer") or {}
         rows.append(
             (
                 card["id"],
@@ -59,6 +75,7 @@ def upsert_cards(conn: sqlite3.Connection, cards: list[dict]) -> int:
                 card_set.get("series"),
                 card_set.get("releaseDate"),
                 images.get("small"),
+                tcgplayer.get("url"),
                 json.dumps(card, separators=(",", ":")),
             )
         )
@@ -67,14 +84,15 @@ def upsert_cards(conn: sqlite3.Connection, cards: list[dict]) -> int:
             """
             INSERT INTO cards (id, name, number, rarity, supertype, artist,
                                set_id, set_name, set_series, set_release,
-                               image_small, raw_json)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                               image_small, tcgplayer_url, raw_json)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET
                 name=excluded.name, number=excluded.number, rarity=excluded.rarity,
                 supertype=excluded.supertype, artist=excluded.artist,
                 set_id=excluded.set_id, set_name=excluded.set_name,
                 set_series=excluded.set_series, set_release=excluded.set_release,
-                image_small=excluded.image_small, raw_json=excluded.raw_json
+                image_small=excluded.image_small,
+                tcgplayer_url=excluded.tcgplayer_url, raw_json=excluded.raw_json
             """,
             rows,
         )
@@ -83,6 +101,24 @@ def upsert_cards(conn: sqlite3.Connection, cards: list[dict]) -> int:
         raise
     conn.commit()
     return len(rows)
+
+
+def backfill_tcgplayer_urls(conn: sqlite3.Connection) -> int:
+    """Populate tcgplayer_url from the raw payload already on disk.
+
+    The full API response was stored in raw_json from the first sync, so this
+    needs no network access and no re-sync. Returns the number of rows updated.
+    """
+    updates = []
+    for row in conn.execute(
+        "SELECT id, raw_json FROM cards WHERE tcgplayer_url IS NULL"
+    ).fetchall():
+        url = (json.loads(row["raw_json"]).get("tcgplayer") or {}).get("url")
+        if url:
+            updates.append((url, row["id"]))
+    conn.executemany("UPDATE cards SET tcgplayer_url = ? WHERE id = ?", updates)
+    conn.commit()
+    return len(updates)
 
 
 def card_count(conn: sqlite3.Connection) -> int:

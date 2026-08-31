@@ -4,6 +4,7 @@ import pytest
 
 from hitcheck_trainer.catalog.db import (
     all_card_images,
+    backfill_tcgplayer_urls,
     card_count,
     get_card,
     get_sync_state,
@@ -118,3 +119,47 @@ def test_sync_state_roundtrips(tmp_path):
     assert get_sync_state(conn, "last_page") == "12"
     set_sync_state(conn, "last_page", "13")
     assert get_sync_state(conn, "last_page") == "13"
+
+
+def test_upsert_stores_tcgplayer_url(tmp_path):
+    conn = open_db(str(tmp_path / "c.sqlite"))
+    upsert_cards(conn, [{
+        "id": "base1-4", "name": "Charizard", "number": "4",
+        "set": {"id": "base1", "name": "Base"},
+        "tcgplayer": {"url": "https://prices.pokemontcg.io/tcgplayer/base1-4"},
+    }])
+    assert get_card(conn, "base1-4")["tcgplayer_url"] == \
+        "https://prices.pokemontcg.io/tcgplayer/base1-4"
+
+
+def test_upsert_tolerates_missing_tcgplayer_block(tmp_path):
+    conn = open_db(str(tmp_path / "c.sqlite"))
+    upsert_cards(conn, [{"id": "x-1", "name": "X", "set": {"id": "x"}}])
+    assert get_card(conn, "x-1")["tcgplayer_url"] is None
+
+
+def test_backfill_populates_from_raw_json(tmp_path):
+    conn = open_db(str(tmp_path / "c.sqlite"))
+    upsert_cards(conn, [{
+        "id": "base1-4", "name": "Charizard",
+        "set": {"id": "base1", "name": "Base"},
+        "tcgplayer": {"url": "https://prices.pokemontcg.io/tcgplayer/base1-4"},
+    }])
+    conn.execute("UPDATE cards SET tcgplayer_url = NULL")
+    conn.commit()
+
+    assert backfill_tcgplayer_urls(conn) == 1
+    assert get_card(conn, "base1-4")["tcgplayer_url"] == \
+        "https://prices.pokemontcg.io/tcgplayer/base1-4"
+
+
+def test_backfill_is_idempotent(tmp_path):
+    conn = open_db(str(tmp_path / "c.sqlite"))
+    upsert_cards(conn, [{
+        "id": "base1-4", "name": "Charizard",
+        "set": {"id": "base1", "name": "Base"},
+        "tcgplayer": {"url": "https://prices.pokemontcg.io/tcgplayer/base1-4"},
+    }])
+    backfill_tcgplayer_urls(conn)
+    assert backfill_tcgplayer_urls(conn) == 0
+
