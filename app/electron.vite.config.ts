@@ -1,0 +1,33 @@
+import { defineConfig } from 'electron-vite'
+
+export default defineConfig({
+  main: {
+    build: {
+      rollupOptions: {
+        input: {
+          index: 'src/main/index.ts',
+          'lookup/window': 'src/main/lookup/window.ts',
+        },
+      },
+    },
+  },
+  preload: {
+    build: {
+      rollupOptions: {
+        input: 'src/preload/index.ts',
+        output: { format: 'cjs', entryFileNames: '[name].js' },
+      },
+    },
+  },
+  renderer: {
+    root: 'src/renderer',
+    build: {
+      rollupOptions: {
+        input: {
+          index: 'src/renderer/index.html',
+          overlay: 'src/renderer/overlay/overlay.html',
+        },
+      },
+    },
+  },
+})

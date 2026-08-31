@@ -183,6 +183,12 @@ is the user bidding real money on a confidently wrong match.
 
 ## Pricing
 
+> **Superseded in part (2026-08-31).** The graded/slab half of this section —
+> eBay Browse active asks, and the deferred PriceCharting subscription — is
+> replaced by the rendered lookup window described in
+> `2026-08-31-lookup-window-design.md`. The raw/ungraded pokemontcg.io path
+> below still stands.
+
 All sources sit behind a single `PriceSource` interface.
 
 **Raw / ungraded — pokemontcg.io.** Free API key, 1,000 requests/day, and every
