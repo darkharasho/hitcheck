@@ -163,3 +163,41 @@ def test_backfill_is_idempotent(tmp_path):
     backfill_tcgplayer_urls(conn)
     assert backfill_tcgplayer_urls(conn) == 0
 
+
+
+def test_open_db_migrates_a_pre_tcgplayer_url_database(tmp_path):
+    path = str(tmp_path / "old.sqlite")
+    old_conn = sqlite3.connect(path)
+    old_conn.executescript(
+        """
+        CREATE TABLE cards (
+            id            TEXT PRIMARY KEY,
+            name          TEXT NOT NULL,
+            number        TEXT,
+            rarity        TEXT,
+            supertype     TEXT,
+            artist        TEXT,
+            set_id        TEXT,
+            set_name      TEXT,
+            set_series    TEXT,
+            set_release   TEXT,
+            image_small   TEXT,
+            raw_json      TEXT NOT NULL
+        );
+        """
+    )
+    old_conn.execute(
+        "INSERT INTO cards (id, name, raw_json) VALUES (?,?,?)",
+        ("pre-1", "Pre-migration Card", "{}"),
+    )
+    old_conn.commit()
+    old_conn.close()
+
+    conn = open_db(path)
+
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(cards)")}
+    assert "tcgplayer_url" in have
+
+    row = get_card(conn, "pre-1")
+    assert row is not None
+    assert row["tcgplayer_url"] is None
