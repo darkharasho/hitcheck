@@ -1,9 +1,30 @@
 import { describe, it, expect } from 'vitest'
-import { createResolvedCache, resolvedDestinations, shouldCacheResolved } from './cache'
+import { cacheKey, createResolvedCache, resolvedDestinations, shouldCacheResolved } from './cache'
 import type { Destination } from './router'
 
 const dest = (url: string, kind: Destination['kind'] = 'product'): Destination =>
   ({ url, kind })
+
+describe('cacheKey', () => {
+  it('composes a key from the classification and the card id', () => {
+    expect(cacheKey('base1-4', 'raw-single')).toBe('raw-single:base1-4')
+  })
+
+  it('gives the same card different keys for different classifications', () => {
+    expect(cacheKey('base1-4', 'slab')).not.toBe(cacheKey('base1-4', 'raw-single'))
+  })
+
+  it('is stable for the same inputs', () => {
+    expect(cacheKey('base1-4', 'slab')).toBe(cacheKey('base1-4', 'slab'))
+  })
+
+  it('keeps ids that contain the separator distinct from other classifications', () => {
+    // A card id is free-form upstream text; the classification is a closed set,
+    // so putting it first keeps the prefix unambiguous.
+    expect(cacheKey('slab:base1-4', 'raw-single'))
+      .not.toBe(cacheKey('base1-4', 'slab'))
+  })
+})
 
 describe('createResolvedCache', () => {
   it('returns undefined for an unseen card', () => {
