@@ -136,6 +136,22 @@ match resolves to a TCGplayer search URL. Sealed gets search rather than deep
 links because TCGplayer sealed product IDs are not in any data we hold; the
 extra click lands on the product type whose lots close slowest.
 
+## The classifier this depends on
+
+Routing needs a slab / sealed / raw-single decision before a URL can be built,
+and nothing produces one today. M3's synthetic-first detector is trained to find
+a card-shaped region; it does not label what kind of object that region is.
+
+M4 therefore needs a **two-way** slab-vs-raw head on the existing detector —
+sealed is out of scope until M4.5, and a sealed box is far enough from a card
+silhouette that M3's detector will simply not fire on it, which fails safe. The
+slab case is well suited to synthetic training data for the same reason cards
+are: slab frames are a small set of rigid, high-contrast templates already used
+by M3's compositing pipeline.
+
+If the two-way head is not ready, M4 can ship routing everything to TCGplayer
+singles and treat slab support as the head's acceptance test.
+
 ## Confidence and ambiguity
 
 The spec's confidence gate exists because a wrong *number* costs money. A wrong
