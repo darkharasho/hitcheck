@@ -7,6 +7,20 @@ let lookup: BrowserWindow | null = null
 const resolved = createResolvedCache()
 
 /**
+ * Bumped by every navigateLookup call so a superseded one can bow out.
+ *
+ * ipcMain.handle does not serialize invocations and lots close in seconds, so
+ * two calls overlapping is the normal case, not an edge. Chromium aborts a
+ * pending load when a newer loadURL starts, which makes the older call's
+ * promise reject; without this counter that older call reads the abort as
+ * "this destination failed" and loads its *next* destination, aborting the
+ * newer lot and leaving the window on the previous lot's page. Abandoning the
+ * older walk after every await is the whole fix: no queue and no settle delay,
+ * so it costs the newer lot nothing.
+ */
+let generation = 0
+
+/**
  * Created once at startup, never per lot. A live auction closes in seconds, so
  * window creation and a cold page load must not sit on the critical path —
  * when the stability gate fires the only remaining work is loadURL.
@@ -43,26 +57,34 @@ export function createLookupWindow(): BrowserWindow {
  * is a slug miss, and the next destination is our own set-aware search.
  */
 export async function navigateLookup(
-  cardId: string,
+  key: string,
   destinations: Destination[],
 ): Promise<void> {
+  const mine = ++generation
+  const superseded = (): boolean => generation !== mine
   const win = !lookup || lookup.isDestroyed() ? createLookupWindow() : lookup
 
-  for (const destination of resolvedDestinations(cardId, destinations, resolved)) {
+  for (const destination of resolvedDestinations(key, destinations, resolved)) {
     try {
       await win.loadURL(destination.url)
     } catch {
-      // Network failure or an aborted load: the window shows the browser's own
-      // error page. Try the next destination; if there is none, that error page
-      // is what the user sees, which is honest.
+      // A newer lookup started while this load was in flight: Chromium aborted
+      // it on purpose and the newer call owns the window now. Stop quietly --
+      // no fall-through, no cache write, no showInactive.
+      if (superseded()) return
+      // Otherwise a genuine network failure or aborted load: the window shows
+      // the browser's own error page. Try the next destination; if there is
+      // none, that error page is what the user sees, which is honest.
       continue
     }
+    if (superseded()) return
     win.showInactive()
     const landed = win.webContents.getURL()
     if (classifyLanding(landed) === 'product') {
-      if (shouldCacheResolved(destination.url, landed)) resolved.set(cardId, landed)
+      if (shouldCacheResolved(destination.url, landed)) resolved.set(key, landed)
       return
     }
   }
+  if (superseded()) return
   win.showInactive()
 }
