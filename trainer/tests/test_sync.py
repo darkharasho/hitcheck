@@ -1,7 +1,13 @@
 import pytest
 
 from hitcheck_trainer.catalog.api import CardPage, CatalogApiError
-from hitcheck_trainer.catalog.db import card_count, get_sync_state, open_db
+from hitcheck_trainer.catalog.db import (
+    card_count,
+    get_card,
+    get_sync_state,
+    open_db,
+    upsert_cards,
+)
 from hitcheck_trainer.catalog.sync import SyncIncompleteError, sync_catalog
 
 
@@ -19,7 +25,11 @@ class FakeApi:
         self.pages_fetched.append(page)
         start = (page - 1) * page_size
         cards = [
-            {"id": f"c-{i}", "name": f"Card {i}"}
+            {
+                "id": f"c-{i}",
+                "name": f"Card {i}",
+                "tcgplayer": {"url": f"https://prices.pokemontcg.io/tcgplayer/c-{i}"},
+            }
             for i in range(start, min(start + page_size, self.total))
         ]
         return CardPage(cards=cards, page=page, total_count=self.total)
@@ -231,3 +241,55 @@ def test_crash_between_upsert_and_checkpoint_leaves_page_resumable(tmp_path, mon
     sync_catalog(api, conn, page_size=250)
     assert api.pages_fetched == [1, 2, 3]
     assert card_count(conn) == 550
+
+
+def _null_out_tcgplayer_urls(conn):
+    """Reproduce a database that got the column from _migrate but no values."""
+    conn.execute("UPDATE cards SET tcgplayer_url = NULL")
+    conn.commit()
+
+
+def test_backfills_tcgplayer_urls_on_the_normal_completion_path(tmp_path):
+    conn = open_db(str(tmp_path / "c.sqlite"))
+    # Seeded from an earlier sync and then stripped, standing in for a row that
+    # predates the column. The API below never serves this id, so an upsert can
+    # never refill it -- only the backfill can.
+    upsert_cards(conn, [{
+        "id": "seed-1", "name": "Seed",
+        "tcgplayer": {"url": "https://prices.pokemontcg.io/tcgplayer/seed-1"},
+    }])
+    _null_out_tcgplayer_urls(conn)
+
+    sync_catalog(FakeApi(total=3), conn, page_size=250)
+
+    assert get_card(conn, "seed-1")["tcgplayer_url"] == (
+        "https://prices.pokemontcg.io/tcgplayer/seed-1"
+    )
+
+
+def test_backfills_tcgplayer_urls_on_the_already_complete_path(tmp_path):
+    conn = open_db(str(tmp_path / "c.sqlite"))
+    sync_catalog(FakeApi(total=3), conn, page_size=250)
+    _null_out_tcgplayer_urls(conn)
+
+    api = FakeApi(total=3)
+    assert sync_catalog(api, conn, page_size=250) == 3
+    assert api.pages_fetched == []  # the early return still skips the network
+    assert get_card(conn, "c-0")["tcgplayer_url"] == (
+        "https://prices.pokemontcg.io/tcgplayer/c-0"
+    )
+
+
+def test_does_not_backfill_on_the_incomplete_path(tmp_path):
+    conn = open_db(str(tmp_path / "c.sqlite"))
+    upsert_cards(conn, [{
+        "id": "seed-1", "name": "Seed",
+        "tcgplayer": {"url": "https://prices.pokemontcg.io/tcgplayer/seed-1"},
+    }])
+    _null_out_tcgplayer_urls(conn)
+
+    with pytest.raises(SyncIncompleteError):
+        sync_catalog(TruncatingApi(total=550), conn, page_size=250)
+
+    # A truncated read is an untrustworthy state; the next resumed run backfills.
+    assert get_card(conn, "seed-1")["tcgplayer_url"] is None

@@ -6,7 +6,13 @@ next is requested; a rerun picks up where the last one stopped rather
 than starting over.
 """
 
-from .db import card_count, get_sync_state, set_sync_state, upsert_cards
+from .db import (
+    backfill_tcgplayer_urls,
+    card_count,
+    get_sync_state,
+    set_sync_state,
+    upsert_cards,
+)
 
 
 class SyncIncompleteError(Exception):
@@ -20,6 +26,23 @@ class SyncIncompleteError(Exception):
     below the total_count the API itself reported, that's unmistakably a
     bad read, not completion -- so this is raised instead of returning.
     """
+
+
+def _backfill(conn) -> None:
+    """Fill tcgplayer_url on rows that predate the column.
+
+    `_migrate` adds the column to an existing database but leaves every row
+    NULL, and the complete-catalog short-circuit below means a rerun never
+    re-upserts those rows -- so without this call an already-synced catalog
+    would keep NULL forever and silently disable raw-single routing. Local
+    only: the value comes from the raw_json already on disk, so this needs no
+    network. Once no NULLs remain it is a single query that updates nothing.
+
+    Deliberately not called on the SyncIncompleteError path: that raise means
+    the read was untrustworthy, and a partial store is exactly what the next
+    resumed run will finish. The backfill runs then instead.
+    """
+    backfill_tcgplayer_urls(conn)
 
 
 def sync_catalog(api, conn, page_size: int = 250, on_progress=None) -> int:
@@ -43,6 +66,7 @@ def sync_catalog(api, conn, page_size: int = 250, on_progress=None) -> int:
     # `last_page`/`total_count` sync_state and resyncing from page 1), not
     # from this incremental-resume path silently re-probing forever.
     if known_total_raw is not None and card_count(conn) >= int(known_total_raw):
+        _backfill(conn)
         return card_count(conn)
 
     page = last_page + 1
@@ -86,4 +110,5 @@ def sync_catalog(api, conn, page_size: int = 250, on_progress=None) -> int:
             break
         page += 1
 
+    _backfill(conn)
     return card_count(conn)
