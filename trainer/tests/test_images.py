@@ -1,6 +1,6 @@
 import os
 
-from hitcheck_trainer.catalog.images import download_images, image_path
+from hitcheck_trainer.catalog.images import download_images, fetch_to_path, image_path
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 64
 
@@ -171,3 +171,51 @@ def test_writes_via_a_temp_file_and_atomic_rename(tmp_path, monkeypatch):
     assert events == [("open", tmp), ("replace", tmp, path)]
     with open(path, "rb") as fh:
         assert fh.read() == PNG
+
+
+def test_fetch_to_path_writes_the_body_and_reports_success(tmp_path):
+    target = tmp_path / "nested" / "item.jpg"
+    ok = fetch_to_path("http://x/i.jpg", str(target), lambda url: (200, b"JPEGBYTES"))
+    assert ok is True
+    assert target.read_bytes() == b"JPEGBYTES"
+
+
+def test_fetch_to_path_retries_a_retryable_status_then_succeeds(tmp_path):
+    statuses = iter([(503, None), (500, None), (200, b"ok")])
+    slept = []
+    ok = fetch_to_path(
+        "http://x/i.jpg",
+        str(tmp_path / "i.jpg"),
+        lambda url: next(statuses),
+        sleep=slept.append,
+    )
+    assert ok is True
+    assert len(slept) == 2
+
+
+def test_fetch_to_path_gives_up_immediately_on_a_non_retryable_status(tmp_path):
+    calls = []
+
+    def fetch(url):
+        calls.append(url)
+        return 404, None
+
+    ok = fetch_to_path("http://x/i.jpg", str(tmp_path / "i.jpg"), fetch, sleep=lambda s: None)
+    assert ok is False
+    assert len(calls) == 1
+    assert not (tmp_path / "i.jpg").exists()
+
+
+def test_fetch_to_path_leaves_no_part_file_behind_on_failure(tmp_path):
+    fetch_to_path("http://x/i.jpg", str(tmp_path / "i.jpg"), lambda url: (0, None),
+                  sleep=lambda s: None)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_fetch_to_path_treats_an_empty_body_as_a_failure(tmp_path):
+    # A 200 with no bytes must not land a zero-byte file that a later
+    # resume check would mistake for a completed download.
+    ok = fetch_to_path("http://x/i.jpg", str(tmp_path / "i.jpg"), lambda url: (200, b""),
+                       sleep=lambda s: None)
+    assert ok is False
+    assert not (tmp_path / "i.jpg").exists()
