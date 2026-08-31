@@ -21,7 +21,7 @@ const CASES = [
 app.whenReady().then(async () => {
   const win = createLookupWindow()
   for (const [label, destinations] of CASES) {
-    await navigateLookup(destinations)
+    await navigateLookup(label, destinations)
     console.log(`${label}: ${win.webContents.getURL()}`)
     await new Promise(r => setTimeout(r, 2000))
   }

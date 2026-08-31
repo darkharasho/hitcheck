@@ -1,8 +1,10 @@
 import { BrowserWindow } from 'electron'
+import { createResolvedCache, resolvedDestinations } from './cache'
 import { classifyLanding } from './outcome'
 import type { Destination } from './router'
 
 let lookup: BrowserWindow | null = null
+const resolved = createResolvedCache()
 
 /**
  * Created once at startup, never per lot. A live auction closes in seconds, so
@@ -40,10 +42,13 @@ export function createLookupWindow(): BrowserWindow {
  * a product page. A `product`-kind destination that redirects to a search page
  * is a slug miss, and the next destination is our own set-aware search.
  */
-export async function navigateLookup(destinations: Destination[]): Promise<void> {
+export async function navigateLookup(
+  cardId: string,
+  destinations: Destination[],
+): Promise<void> {
   const win = !lookup || lookup.isDestroyed() ? createLookupWindow() : lookup
 
-  for (const destination of destinations) {
+  for (const destination of resolvedDestinations(cardId, destinations, resolved)) {
     try {
       await win.loadURL(destination.url)
     } catch {
@@ -53,7 +58,11 @@ export async function navigateLookup(destinations: Destination[]): Promise<void>
       continue
     }
     win.showInactive()
-    if (classifyLanding(win.webContents.getURL()) === 'product') return
+    const landed = win.webContents.getURL()
+    if (classifyLanding(landed) === 'product') {
+      resolved.set(cardId, landed)
+      return
+    }
   }
   win.showInactive()
 }

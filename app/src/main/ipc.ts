@@ -12,6 +12,6 @@ export function registerIpc(): void {
   ipcMain.handle(
     'hitcheck:lookupCard',
     (_e, card: CardRecord, classification: Classification) =>
-      navigateLookup(routeCard(card, classification)),
+      navigateLookup(card.id, routeCard(card, classification)),
   )
 }
