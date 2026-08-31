@@ -399,7 +399,7 @@ export function slugify(value: string): string {
     .toLowerCase()
     .normalize('NFD')
     // Strip combining marks left behind by NFD, so "é" becomes "e".
-    .replace(/[̀-ͯ]/g, '')
+    .replace(/[\u0300-\u036f]/g, '')
     .replace(/&/g, ' and ')
     // Apostrophes vanish rather than becoming hyphens: PriceCharting slugs
     // "Team Rocket's Meowth" as team-rockets-meowth, not team-rocket-s-meowth.
@@ -1497,7 +1497,8 @@ git commit -m "feat(lookup): cache resolved product URLs, drop affiliate trackin
 
 ## Done when
 
-- `cd app && npm test` passes, including 43 new tests across five new test files.
+- `cd app && npm test` passes, including 51 new tests across six new test
+  files (`slug`, `url`, `router`, `outcome`, `candidates`, `cache`).
 - `cd app && npm run typecheck` is clean.
 - `cd trainer && uv run pytest` passes.
 - `data/catalog.sqlite` has `tcgplayer_url` populated for 20,213 cards.
@@ -1515,6 +1516,12 @@ git commit -m "feat(lookup): cache resolved product URLs, drop affiliate trackin
   the decision; the overlay has no content surface beyond a box until M6.
 - **Persisting the resolved-URL cache to disk.** In-memory only, for the reason
   given in `cache.ts`.
+- **`PriceSource` and the numeric raw-single price.** The spec's M4 pairs the
+  lookup window with a number in the overlay for raw singles. It is left out
+  here for two reasons: the pokemontcg.io prices are already sitting in
+  `raw_json` so no fetching work is required, and the overlay has no surface
+  to render a number on until M6. It is a small, independent plan that can
+  run in parallel with this one.
 - **A learned `card_id → PriceCharting slug` table.** The spec defers this
   until the fallback rate is observable. `SET_SLUG_OVERRIDES` is where measured
   misses go in the meantime.
