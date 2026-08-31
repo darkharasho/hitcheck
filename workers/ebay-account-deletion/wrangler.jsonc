@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "hitcheck-ebay-notify",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-31",
+  // Own subdomain, matching the one-worker-per-subdomain pattern the other
+  // axi.link workers use. axi.link's DNS is already on Cloudflare, so the
+  // first deploy provisions hitcheck.axi.link and its DNS record.
+  "routes": [{ "pattern": "hitcheck.axi.link", "custom_domain": true }],
+  // Not a secret and must match the URL registered with eBay byte for byte:
+  // it is hashed into the challenge response, so a mismatch here fails
+  // verification with a response that still looks well-formed.
+  "vars": {
+    "EBAY_ENDPOINT_URL": "https://hitcheck.axi.link/ebay/account-deletion"
+  }
+}
