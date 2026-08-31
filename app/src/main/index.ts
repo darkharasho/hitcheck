@@ -36,6 +36,14 @@ function createWindow(): void {
   })
   if (process.env.ELECTRON_RENDERER_URL) win.loadURL(process.env.ELECTRON_RENDERER_URL)
   else win.loadFile(join(import.meta.dirname, '../renderer/index.html'))
+
+  // The lookup window is created once at startup and stays open (hidden or
+  // shown) for the app's whole life, so Electron's window count never drops
+  // to zero on its own -- 'window-all-closed' below would otherwise never
+  // fire once the user closes this, the only window they can see and close.
+  // Quitting here, tied to this specific window, keeps that shutdown path
+  // reachable without touching the lookup window's own lifecycle.
+  win.on('closed', () => { if (process.platform !== 'darwin') app.quit() })
 }
 
 app.whenReady().then(() => {

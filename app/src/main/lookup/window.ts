@@ -41,8 +41,7 @@ export function createLookupWindow(): BrowserWindow {
  * is a slug miss, and the next destination is our own set-aware search.
  */
 export async function navigateLookup(destinations: Destination[]): Promise<void> {
-  if (!lookup || lookup.isDestroyed()) createLookupWindow()
-  const win = lookup!
+  const win = !lookup || lookup.isDestroyed() ? createLookupWindow() : lookup
 
   for (const destination of destinations) {
     try {
