@@ -18,6 +18,10 @@ from .normalize import normalize_name, normalize_number, normalize_set
 MISSING_NAME = "MISSING_NAME"
 MISSING_SET = "MISSING_SET"
 MISSING_NUMBER = "MISSING_NUMBER"
+# No longer emitted -- a blank Language aspect is resolved on its merits.
+# The name is kept because manifests written before that change carry
+# MISSING_LANGUAGE counts, and dropping it from DISCARD_REASONS would make
+# those historical yield reports unreadable.
 MISSING_LANGUAGE = "MISSING_LANGUAGE"
 NOT_ENGLISH = "NOT_ENGLISH"
 UNKNOWN_SET = "UNKNOWN_SET"
@@ -112,10 +116,15 @@ class CardLookup:
 
 def resolve(aspects: dict[str, str], lookup: CardLookup) -> Resolution:
     """Resolve one listing's Item Specifics, or discard it with a reason."""
+    # A blank Language aspect is not evidence of anything. Sellers leave it
+    # empty constantly -- it was 588 of the first 1,904 discards on the live
+    # corpus run, a third of everything thrown away, and those listings were
+    # rejected before name, set or number were ever examined. So a blank
+    # language falls through to the catalog match and has to earn its place
+    # on set and number like any other listing. A stated language still
+    # binds: "Japanese" is a discard, not a maybe.
     language = aspects.get("Language")
-    if not language:
-        return Resolution(None, MISSING_LANGUAGE)
-    if normalize_name(language) != "english":
+    if language and normalize_name(language) != "english":
         return Resolution(None, NOT_ENGLISH)
 
     name_key = normalize_name(aspects.get("Card Name", ""))

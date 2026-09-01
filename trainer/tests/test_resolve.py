@@ -73,14 +73,22 @@ def test_a_missing_aspect_discards_with_a_named_reason():
     assert resolve(aspects(**{"Card Name": None}), lookup()).reason == MISSING_NAME
     assert resolve(aspects(Set=None), lookup()).reason == MISSING_SET
     assert resolve(aspects(**{"Card Number": None}), lookup()).reason == MISSING_NUMBER
-    assert resolve(aspects(Language=None), lookup()).reason == MISSING_LANGUAGE
 
 
-def test_a_missing_language_is_a_discard_not_an_assumed_english():
-    # Japanese prints share artwork with English ones but share no
-    # numbering, so an unmarked Japanese listing would resolve to a
-    # plausible-looking wrong id.
-    assert resolve(aspects(Language=None), lookup()).card_id is None
+def test_a_missing_language_resolves_on_set_and_number():
+    # A blank Language aspect is the single largest source of discards on
+    # the live corpus and says nothing about the card -- sellers just skip
+    # the field. Such a listing is resolved on its merits instead.
+    assert resolve(aspects(Language=None), lookup()).card_id == "sv3pt5-199"
+
+
+def test_a_missing_language_still_has_to_match_the_catalog():
+    # Falling through the language check buys no leniency anywhere else:
+    # a Japanese print numbered outside the English set is still discarded,
+    # now on the numbering rather than on the missing label.
+    result = resolve(aspects(Language=None, **{"Card Number": "999"}), lookup())
+    assert result.card_id is None
+    assert result.reason == NO_SUCH_NUMBER
 
 
 def test_a_non_english_listing_is_discarded():
