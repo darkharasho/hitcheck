@@ -21,6 +21,9 @@ from dataclasses import dataclass
 
 from PIL import Image
 
+from .curves import Curve, interpolate, nearest
+from .descriptors import quad_corner_deviation, reblur_ratio
+
 # degrade.jpeg_artifacts: quality = int(max(8, 60 - 45 * min(strength, 1.0)))
 # so strength 0 -> 60 and strength 1 -> 15. The max(8, ...) floor is
 # unreachable, which makes 15 the saturation marker and 60 the "no JPEG
@@ -134,3 +137,59 @@ def estimate_jpeg(image: Image.Image) -> AxisEstimate:
     if quality >= JPEG_QUALITY_AT_ZERO:
         return AxisEstimate(0.0)
     return AxisEstimate((JPEG_QUALITY_AT_ZERO - quality) / 45.0)
+
+
+def strength_for_kernel(kernel: int) -> float:
+    """Midpoint of the strength interval that produces this blur kernel.
+
+    `motion_blur` uses `k = int(3 + 12 * strength) | 1`, so the forward
+    map is many-to-one: `int(3 + 12s)` in {k-1, k} both give kernel k,
+    which is `s` in [(k-4)/12, (k-2)/12). The inverse is therefore an
+    INTERVAL, not a point, and reporting its midpoint is the most a
+    kernel size can honestly say. Worst-case error is half the widest
+    interval, 1/12.
+
+    Kernel 1 is the sentinel for "no blur applied at all" -- `motion_blur`
+    returns the image untouched at strength <= 0 rather than convolving
+    with a 3-tap kernel, so that case is genuinely 0.0 and not 1/24.
+    """
+    if kernel == 1:
+        return 0.0
+    if kernel < 3 or kernel % 2 == 0:
+        raise ValueError(f"kernel {kernel} is not an odd size >= 3 (or the 1 sentinel)")
+    low = max(0.0, (kernel - 4) / 12.0)
+    high = (kernel - 2) / 12.0
+    return (low + high) / 2.0
+
+
+def estimate_blur(image: Image.Image, curve: Curve) -> AxisEstimate:
+    """Motion-blur strength-equivalent, via the re-blur ratio.
+
+    Never saturates the way glare and JPEG do: `motion_blur` has no
+    `min(strength, 1.0)` clamp, and kernel 15 is reachable from strengths
+    up to 13/12. `nearest` rather than `interpolate` because the forward
+    parameter is quantised to odd kernel sizes and interpolating between
+    calibrated points would claim a precision that does not exist.
+    """
+    return AxisEstimate(strength_for_kernel(round(nearest(curve, reblur_ratio(image)))))
+
+
+def estimate_perspective(quad: list[list[float]], curve: Curve) -> AxisEstimate:
+    """Perspective strength-equivalent from a recorded card quadrilateral.
+
+    ONE SAMPLE, NOT THE PARAMETER. `perspective_warp` draws its corner
+    jitter from `rng.uniform(-shift, shift, (4, 2))`, so this number is a
+    single realisation of that draw and is noisy per image; it is only
+    meaningful averaged over a corpus. Every caller that prints it must
+    say so.
+
+    The descriptor is closed-form (max normalised corner offset from the
+    best-fit rectangle) but its relationship to `shift` is not: the
+    best-fit rectangle is built from corner means, so each deviation is a
+    half-difference of two uniforms and the max over four of those sits
+    systematically below `shift`. Rather than derive that constant, the
+    curve measures it -- which also means the estimator stays correct if
+    `perspective_warp`'s jitter distribution ever changes.
+    """
+    strength, saturated = interpolate(curve, quad_corner_deviation(quad))
+    return AxisEstimate(strength, saturated=saturated)
