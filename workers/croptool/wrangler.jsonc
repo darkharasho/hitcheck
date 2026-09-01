@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "hitcheck-croptool",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-31",
+  // Its own subdomain, matching the one-worker-per-subdomain pattern the
+  // other axi.link workers use. Keeping it off hitcheck.axi.link means the
+  // Access policy here cannot accidentally cover the eBay notification
+  // endpoint, which must stay reachable by eBay without a login.
+  "routes": [{ "pattern": "crop.axi.link", "custom_domain": true }],
+  "d1_databases": [
+    { "binding": "DB", "database_name": "hitcheck-crops", "database_id": "REPLACE_WITH_D1_ID" }
+  ],
+  "r2_buckets": [
+    { "binding": "PHOTOS", "bucket_name": "hitcheck-corpus" }
+  ],
+  "vars": {
+    // Both are required. The worker refuses to serve a photograph if either
+    // is missing, because an unset Access config does not fail closed on its
+    // own -- it just means nobody is checked.
+    "ACCESS_TEAM_DOMAIN": "REPLACE.cloudflareaccess.com",
+    "ACCESS_AUD": "REPLACE_WITH_ACCESS_APPLICATION_AUD",
+    // How many reference cards a new cropper marks before their work counts.
+    "CALIBRATION_N": "5",
+    // Minutes an unfinished card stays reserved for whoever was handed it.
+    "CLAIM_MINUTES": "10"
+  }
+}
