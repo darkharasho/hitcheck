@@ -225,3 +225,58 @@ def test_a_decodable_image_is_kept(tmp_path):
                           str(tmp_path), Manifest(), ["q"], target=10, sleep=lambda s: None)
     assert len(result.entries) == 1
     assert result.discards == {}
+
+
+class FilterRecordingClient(FakeClient):
+    def __init__(self, items):
+        super().__init__(items)
+        self.filters = []
+
+    def search(self, query, limit=200, offset=0, extra_filter=None):
+        self.filters.append(extra_filter)
+        return super().search(query, limit=limit, offset=offset, extra_filter=extra_filter)
+
+
+def test_the_search_filter_reaches_the_browse_call(tmp_path):
+    # Filtering server-side is the only way to avoid paying a detail call
+    # for a listing that is going to be discarded: the search summary does
+    # not carry the aspects the resolver needs.
+    client = FilterRecordingClient({"v1|1|0": detail("v1|1|0", specifics())})
+    build_corpus(client, lookup(), ok_fetch, str(tmp_path), Manifest(), ["q"],
+                 target=10, sleep=lambda s: None, extra_filter="itemLocationCountry:US")
+    assert client.filters[0] == "itemLocationCountry:US"
+
+
+def test_no_filter_is_passed_when_none_is_asked_for(tmp_path):
+    client = FilterRecordingClient({"v1|1|0": detail("v1|1|0", specifics())})
+    build_corpus(client, lookup(), ok_fetch, str(tmp_path), Manifest(), ["q"],
+                 target=10, sleep=lambda s: None)
+    assert client.filters[0] is None
+
+
+def test_the_filter_is_recorded_in_the_manifest(tmp_path):
+    client = FakeClient({"v1|1|0": detail("v1|1|0", specifics())})
+    result = build_corpus(client, lookup(), ok_fetch, str(tmp_path), Manifest(), ["q"],
+                          target=10, sleep=lambda s: None,
+                          extra_filter="itemLocationCountry:US")
+    assert result.filters == ["itemLocationCountry:US"]
+
+
+def test_a_rerun_under_a_different_filter_records_both(tmp_path):
+    # The 161 entries already on disk were acquired unfiltered. A manifest
+    # that reported only the newest filter would misdescribe the corpus it
+    # actually holds, which is the one thing this record exists to prevent.
+    existing = Manifest(filters=["itemLocationCountry:US"])
+    client = FakeClient({"v1|1|0": detail("v1|1|0", specifics())})
+    result = build_corpus(client, lookup(), ok_fetch, str(tmp_path), existing, ["q"],
+                          target=10, sleep=lambda s: None, extra_filter="buyingOptions:{AUCTION}")
+    assert result.filters == ["itemLocationCountry:US", "buyingOptions:{AUCTION}"]
+
+
+def test_the_same_filter_twice_is_recorded_once(tmp_path):
+    existing = Manifest(filters=["itemLocationCountry:US"])
+    client = FakeClient({"v1|1|0": detail("v1|1|0", specifics())})
+    result = build_corpus(client, lookup(), ok_fetch, str(tmp_path), existing, ["q"],
+                          target=10, sleep=lambda s: None,
+                          extra_filter="itemLocationCountry:US")
+    assert result.filters == ["itemLocationCountry:US"]

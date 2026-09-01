@@ -91,3 +91,19 @@ def test_yield_summary_states_the_corpus_yield_including_every_discard():
 
 def test_yield_summary_of_a_perfect_run_still_reports_zero_discards():
     assert "discarded=0" in Manifest(entries=[], discards={}, queries=[]).yield_summary()
+
+
+def test_a_manifest_records_the_search_filter_it_was_built_under(tmp_path):
+    # The filter decides which listings could ever have been seen, so it is
+    # part of the corpus's selection bias and has to travel with it.
+    path = str(tmp_path / "manifest.json")
+    save_manifest(Manifest(filters=["itemLocationCountry:US"]), path)
+    assert load_manifest(path).filters == ["itemLocationCountry:US"]
+
+
+def test_a_manifest_written_before_filters_existed_still_loads(tmp_path):
+    # data/corpus/manifest.json already holds 161 unfiltered entries.
+    path = str(tmp_path / "manifest.json")
+    with open(path, "w") as fh:
+        json.dump({"entries": [], "discards": {}, "queries": ["q"]}, fh)
+    assert load_manifest(path).filters == []
