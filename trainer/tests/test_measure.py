@@ -281,8 +281,26 @@ from hitcheck_trainer.augment.measure import (
 )
 
 
+def glossy_card(size=(240, 336), seed=7):
+    """Card-like, but with the luma distribution of a real scan.
+
+    `card_like()`'s gradient tops out at exactly GLARE_THRESHOLD, so on the
+    median seed a glare ellipse crosses the threshold nowhere and the
+    descriptor reads pure baseline. Real scans measured from data/images/
+    sit at mean luma 98-203 with p95 213-244; this fixture matches that, so
+    glare registers wherever the ellipse lands.
+    """
+    rng = np.random.default_rng(seed)
+    w, h = size
+    arr = np.full((h, w, 3), 215.0)               # bright border/foil stock
+    arr[h // 8 : 7 * h // 8, w // 10 : 9 * w // 10] = 150.0   # art box
+    arr[h // 4 : h // 2, w // 4 : 3 * w // 4] = 105.0         # artwork
+    arr += rng.normal(0, 14, arr.shape)
+    return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
+
+
 def glare_curve(image=None, strengths=(0.0, 0.25, 0.5, 0.75, 1.0), seeds=range(48)):
-    image = image or card_like()
+    image = image or glossy_card()
     points = []
     for strength in strengths:
         masses = [
@@ -308,17 +326,16 @@ def blockiness_curve(image=None, strengths=(0.0, 0.25, 0.5, 0.75, 1.0)):
     return Curve(name="jpeg_blockiness", parameter="strength", points=points)
 
 
-@pytest.mark.parametrize("strength", [0.25, 0.5])
+@pytest.mark.parametrize("strength", [0.25, 0.5, 0.75])
 def test_glare_estimate_recovers_a_known_strength_on_average(strength):
     # add_glare draws a random ellipse centre AND both radii, so a single
     # image's tail mass is one sample of a wide distribution.
     #
-    # Stops at 0.5 for the same reason the perspective round-trip stops at
-    # 0.6: nearer the top of the curve a growing share of draws clamp and
-    # flag saturation, which biases the mean upward and would turn this
-    # into a test of the clamp. Saturation and ordering are covered
-    # separately below, and between them they pin the rest of the range.
-    image = card_like()
+    # glossy_card()'s luma sits well above card_like()'s (mean ~170 vs a
+    # 40-200 gradient that tops out exactly at GLARE_THRESHOLD), so the
+    # ellipse registers wherever it lands and the round-trip is
+    # well-conditioned across the whole range, not just the lower half.
+    image = glossy_card()
     curve = glare_curve(image)
     recovered = [
         estimate_glare(add_glare(image, seed, strength), curve).strength
@@ -327,18 +344,42 @@ def test_glare_estimate_recovers_a_known_strength_on_average(strength):
     assert sum(recovered) / len(recovered) == pytest.approx(strength, abs=0.12)
 
 
-def test_glare_estimate_saturates_above_full_strength():
-    # add_glare clamps with min(strength, 1.0), so 1.0 and 2.5 produce
-    # IDENTICAL pixels. Reporting 2.5 would be inventing information.
-    image = card_like()
+def test_glare_estimate_is_stable_at_and_above_full_strength():
+    # (a) is the real spec claim: add_glare clamps its fill with
+    # min(strength, 1.0), so strength 1.0 and 2.5 produce BYTE-IDENTICAL
+    # pixels -- estimate_glare must return the same .strength and the same
+    # .saturated for both, for any seed. Reporting 2.5 would be inventing
+    # information the pixels do not contain.
+    #
+    # This has to be checked directly against a curve rather than a single
+    # gambled seed: at strength 1.0, 54.7% of seeds already read at or
+    # above a mean-built curve's top point and 45.3% do not, so asserting
+    # "seed 5 saturates" against a seed-averaged curve is a coin flip by
+    # construction, on any fixture. (b) below checks the real clamp logic
+    # instead, against a reading built to exceed the curve's top point.
+    image = glossy_card()
     curve = glare_curve(image)
-    estimate = estimate_glare(add_glare(image, 5, 2.5), curve)
+    for seed in range(12):
+        at_one = estimate_glare(add_glare(image, seed, 1.0), curve)
+        at_2_5 = estimate_glare(add_glare(image, seed, 2.5), curve)
+        assert at_2_5.strength == pytest.approx(at_one.strength)
+        assert at_2_5.saturated == at_one.saturated
+
+    # (b) saturation fires deterministically once the descriptor reaches or
+    # exceeds the curve's top calibrated point -- checked directly against
+    # a reading constructed to exceed it, not against a gambled seed's
+    # draw (a solid-white image has the maximum possible bright_tail_mass,
+    # far past any calibrated top point).
+    top_descriptor = curve.points[-1][1]
+    all_white = Image.new("RGB", image.size, (255, 255, 255))
+    assert bright_tail_mass(all_white) >= top_descriptor
+    estimate = estimate_glare(all_white, curve)
     assert estimate.saturated is True
     assert estimate.strength == pytest.approx(1.0)
 
 
 def test_glare_estimate_is_ordered_across_strengths():
-    image = card_like()
+    image = glossy_card()
     curve = glare_curve(image)
     estimates = [
         sum(
