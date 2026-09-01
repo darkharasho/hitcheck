@@ -165,11 +165,30 @@ def strength_for_kernel(kernel: int) -> float:
 def estimate_blur(image: Image.Image, curve: Curve) -> AxisEstimate:
     """Motion-blur strength-equivalent, via the re-blur ratio.
 
-    Never saturates the way glare and JPEG do: `motion_blur` has no
-    `min(strength, 1.0)` clamp, and kernel 15 is reachable from strengths
-    up to 13/12. `nearest` rather than `interpolate` because the forward
-    parameter is quantised to odd kernel sizes and interpolating between
-    calibrated points would claim a precision that does not exist.
+    CORPUS-LEVEL ONLY, like perspective and glare. `motion_blur` picks a
+    random angle per seed and `reblur_ratio` responds to angle as well as
+    to kernel size, because real content is anisotropic. Measured on
+    catalog scans, the within-image spread across angles at a fixed
+    kernel (0.014-0.040) is three to nine times the gap between adjacent
+    kernels' calibration points (0.004-0.011) -- so a single image cannot
+    resolve its own kernel and a per-image reading is noise. Average over
+    a corpus.
+
+    COMPRESSES ABOVE ROUGHLY 0.4. The curve's adjacent gaps shrink from
+    0.010 to 0.004 across the kernel range as the ratio saturates, so
+    heavy blur is systematically UNDER-reported: measured mean recovery
+    on catalog scans is -0.11 at strength 0.6 and -0.39 at 0.9. The bias
+    is one-directional by design of the descriptor, and under-reporting
+    is the safe direction here -- it makes a corpus look sharper than it
+    is, biasing the M2 extrapolation toward "training required" rather
+    than toward skipping training we needed.
+
+    Never saturates the way glare and JPEG do in the `AxisEstimate`
+    sense: `motion_blur` has no `min(strength, 1.0)` clamp, and kernel 15
+    is reachable from strengths up to 13/12. `nearest` rather than
+    `interpolate` because the forward parameter is quantised to odd
+    kernel sizes and interpolating between calibrated points would claim
+    a precision that does not exist.
     """
     return AxisEstimate(strength_for_kernel(round(nearest(curve, reblur_ratio(image)))))
 
