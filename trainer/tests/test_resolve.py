@@ -116,6 +116,36 @@ def test_a_clear_fuzzy_winner_is_accepted_rather_than_discarded():
     assert result.card_id == "swsh10-TG12"
 
 
+def test_two_close_matches_within_the_margin_are_ambiguous():
+    # difflib.SequenceMatcher(None, "brilliantstat", "brilliantstars").ratio()
+    # == 0.8889 and against "brilliantstar" == 0.9231 -- both clear the 0.85
+    # cutoff, so get_close_matches returns both (highest first: "brilliantstar",
+    # "brilliantstars"), and their margin is 0.0342, under the 0.05 margin
+    # required to pick a winner. This is the len(close) > 1 branch itself,
+    # not the single-candidate fast path or the containment fallback.
+    lk = CardLookup(
+        set_ids={"brilliantstars": "swsh9", "brilliantstar": "swshx"},
+        cards={},
+    )
+    result = resolve(aspects(Set="Brilliant Stat"), lk)
+    assert result.card_id is None
+    assert result.reason == AMBIGUOUS_SET
+
+
+def test_two_close_matches_beyond_the_margin_pick_the_winner():
+    # difflib.SequenceMatcher(None, "evolvingskie", "evolvingskies").ratio()
+    # == 0.96 and against "evolvingsky" == 0.8696 -- both clear the 0.85
+    # cutoff, so get_close_matches returns both (highest first:
+    # "evolvingskies", "evolvingsky"), and their margin is 0.0904, over the
+    # 0.05 margin, so the resolver accepts the winner rather than discarding.
+    lk = CardLookup(
+        set_ids={"evolvingskies": "swsh7", "evolvingsky": "swshy"},
+        cards={("swsh7", "199"): [("swsh7-199", "charizardex")]},
+    )
+    result = resolve(aspects(Set="Evolving Skie"), lk)
+    assert result.card_id == "swsh7-199"
+
+
 def test_a_number_absent_from_the_matched_set_is_discarded():
     result = resolve(aspects(**{"Card Number": "9999/165"}), lookup())
     assert result.reason == NO_SUCH_NUMBER
