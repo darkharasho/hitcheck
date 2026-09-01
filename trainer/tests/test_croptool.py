@@ -118,6 +118,18 @@ def test_posting_a_degenerate_quad_is_rejected_with_400(tmp_path):
     assert app.next_item()["item_id"] == "v1|1|0"  # not advanced
 
 
+def test_posting_a_counter_clockwise_quad_is_rejected_and_tells_the_operator_why(tmp_path):
+    # The 400 body is what the client alerts, so the winding message has to
+    # survive the round trip -- otherwise the operator sees a rejection with
+    # no idea that re-clicking the other way round is the fix.
+    app = make_app(tmp_path)
+    bad = json.dumps({"item_id": "v1|1|0", "quad": list(reversed(QUAD))}).encode()
+    status, _, payload = app.handle("POST", "/api/quad", bad)
+    assert status == 400
+    assert "counter-clockwise" in json.loads(payload)["error"]
+    assert app.next_item()["item_id"] == "v1|1|0"  # not advanced
+
+
 def test_posting_the_wrong_number_of_points_is_rejected_with_400(tmp_path):
     app = make_app(tmp_path)
     bad = json.dumps({"item_id": "v1|1|0", "quad": [[0, 0], [400, 0], [400, 400]]}).encode()

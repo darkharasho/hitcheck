@@ -34,11 +34,22 @@ MIN_QUAD_AREA = 1000.0
 Quad = list[list[float]]
 
 
-def quad_area(quad: Quad) -> float:
-    """Shoelace area, orientation-independent."""
+def signed_quad_area(quad: Quad) -> float:
+    """Shoelace area WITH sign -- the winding discriminator.
+
+    Image coordinates are y-down, which flips the textbook (y-up) sense of
+    the shoelace sign: a walk that looks clockwise ON SCREEN comes out
+    POSITIVE here. Verified by test rather than reasoned about, because
+    getting it backwards would reject exactly the correct click order.
+    """
     points = np.asarray(quad, dtype=np.float64)
     x, y = points[:, 0], points[:, 1]
-    return float(abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))) / 2.0)
+    return float((np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))) / 2.0)
+
+
+def quad_area(quad: Quad) -> float:
+    """Shoelace area, orientation-independent."""
+    return abs(signed_quad_area(quad))
 
 
 def _orientation(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
@@ -59,7 +70,8 @@ def validate_quad(quad: Quad) -> None:
     points = np.asarray(quad, dtype=np.float64)
     if points.shape != (4, 2):
         raise ValueError(f"expected 4 [x, y] points, got shape {points.shape}")
-    area = quad_area(points)
+    signed = signed_quad_area(points)
+    area = abs(signed)
     if area < MIN_QUAD_AREA:
         raise ValueError(f"quad area {area:.1f} is below {MIN_QUAD_AREA} — degenerate")
     # A quad recorded in click order (walking its boundary) is simple, not
@@ -70,6 +82,18 @@ def validate_quad(quad: Quad) -> None:
     # quad and needs its own check.
     if not _segments_properly_cross(points[0], points[2], points[1], points[3]):
         raise ValueError(f"quad {quad} is self-intersecting (bow-tie) — check click order")
+    # Winding is not cosmetic. perspective_coeffs pairs the output
+    # rectangle's corners with the recorded corners positionally, so a
+    # counter-clockwise walk sends the output's top-right to the card's
+    # bottom-left and yields a diagonally mirrored crop -- one that cannot
+    # retrieve its own catalog scan, i.e. a guaranteed top-1 miss that
+    # nothing downstream would flag. Positive signed area == clockwise in
+    # y-down image space (see signed_quad_area).
+    if signed < 0:
+        raise ValueError(
+            f"quad {quad} was clicked counter-clockwise — the click order must be the "
+            "card's top-left corner first, then clockwise; re-click this card"
+        )
 
 
 def perspective_coeffs(size: tuple[int, int], quad: Quad) -> tuple[float, ...]:

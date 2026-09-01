@@ -9,8 +9,14 @@ from hitcheck_trainer.corpus.crops import (
     load_crops,
     quad_area,
     save_crops,
+    signed_quad_area,
     validate_quad,
 )
+
+# Image coordinates are y-down, which inverts the textbook (y-up) sense of
+# "clockwise". This quad is unambiguously clockwise ON SCREEN: top-left,
+# top-right, bottom-right, bottom-left, in a card's 245x342 proportions.
+CLOCKWISE_IN_IMAGE_SPACE = [[0, 0], [100, 0], [100, 140], [0, 140]]
 
 
 def photo_with_marked_card(quad, size=(400, 400)):
@@ -57,12 +63,35 @@ def test_validate_rejects_a_self_intersecting_bow_tie_quad():
         validate_quad(quad)
 
 
-@pytest.mark.parametrize("winding", ["clockwise", "counterclockwise"])
-def test_validate_accepts_a_normal_convex_quad_in_either_winding(winding):
-    quad = [[50, 60], [300, 40], [330, 300], [80, 330]]
-    if winding == "counterclockwise":
-        quad = list(reversed(quad))
-    validate_quad(quad)
+def test_signed_area_is_positive_for_a_screen_clockwise_quad():
+    # Pins the sign convention empirically rather than by reasoning: in
+    # y-down image space the shoelace sum of a screen-clockwise walk is
+    # POSITIVE, the opposite of the y-up textbook result.
+    assert signed_quad_area(CLOCKWISE_IN_IMAGE_SPACE) > 0
+    assert signed_quad_area(list(reversed(CLOCKWISE_IN_IMAGE_SPACE))) < 0
+
+
+def test_validate_accepts_the_documented_clockwise_click_order():
+    validate_quad(CLOCKWISE_IN_IMAGE_SPACE)
+    validate_quad([[50, 60], [300, 40], [330, 300], [80, 330]])
+
+
+def test_validate_rejects_a_counter_clockwise_click_order():
+    # [TL, BL, BR, TR]: an operator who clicked anticlockwise. The quad is
+    # a perfectly good rectangle, so neither the area gate nor the bow-tie
+    # gate fires -- but perspective_coeffs would map the output's top-right
+    # onto the card's bottom-left and produce a diagonally mirrored crop
+    # that cannot retrieve its own catalog scan.
+    quad = list(reversed(CLOCKWISE_IN_IMAGE_SPACE))
+    assert quad_area(quad) > MIN_QUAD_AREA
+    with pytest.raises(ValueError) as exc:
+        validate_quad(quad)
+    message = str(exc.value)
+    assert "counter-clockwise" in message
+    assert "click order" in message
+    # Distinct from both existing messages, so the operator knows to re-click.
+    assert "degenerate" not in message
+    assert "bow-tie" not in message
 
 
 def test_apply_quad_unwarps_an_angled_card_to_a_full_frame():
