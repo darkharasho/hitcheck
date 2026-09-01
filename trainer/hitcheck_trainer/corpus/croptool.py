@@ -32,6 +32,8 @@ PAGE = """<!doctype html>
   header { padding: 8px 12px; display: flex; gap: 16px; align-items: baseline; }
   canvas { display: block; cursor: crosshair; }
   #hint { color: #9ad; }
+  #save { font: inherit; padding: 4px 12px; }
+  #save:disabled { opacity: 0.4; }
 </style></head><body>
 <header>
   <strong id="progress">loading...</strong>
@@ -39,6 +41,7 @@ PAGE = """<!doctype html>
   <span id="hint">drag a box around the card, then put corner 1 on the card's
   TOP-LEFT and the rest to match. space = save, u = start over,
   s = skip (photo will not load / no card visible)</span>
+  <button id="save" disabled>Save (space)</button>
 </header>
 <canvas id="c"></canvas>
 <script>
@@ -51,12 +54,37 @@ PAGE = """<!doctype html>
 // handle is dragged past its neighbours.
 let item = null, scale = 1, points = [], drag = null, grabbed = null, img = new Image();
 const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+const saveButton = document.getElementById('save');
 const HANDLE_R = 7;
+
+function saveable() {
+  return points.length === 4 && Boolean(item);
+}
+
+async function save() {
+  if (!saveable()) return;
+  const res = await fetch('/api/quad', {
+    method: 'POST',
+    body: JSON.stringify({item_id: item.item_id, quad: points}),
+  });
+  // On rejection the quad is LEFT on screen -- the operator drags the
+  // offending handle rather than re-marking the card from scratch.
+  if (res.ok) { load(); } else { alert((await res.json()).error); }
+}
+
+// mousedown prevented rather than click handled alone: a button that takes
+// focus treats the next space as a press of itself, and the quad would go up
+// twice -- once from the keydown handler, once from the button.
+saveButton.addEventListener('mousedown', (e) => e.preventDefault());
+saveButton.addEventListener('click', save);
 
 async function load() {
   const state = await (await fetch('/api/next')).json();
   document.getElementById('progress').textContent = state.done + ' / ' + state.total;
-  if (!state.item_id) { document.getElementById('card').textContent = 'done'; return; }
+  if (!state.item_id) {
+    item = null; saveButton.disabled = true;
+    document.getElementById('card').textContent = 'done'; return;
+  }
   item = state;
   document.getElementById('card').textContent = state.card_id;
   points = []; drag = null; grabbed = null;
@@ -66,6 +94,9 @@ async function load() {
 }
 
 function draw() {
+  // Every path that changes the quad already calls draw(), so the button's
+  // enabled state is derived here rather than tracked separately.
+  saveButton.disabled = !saveable();
   const maxH = window.innerHeight - 60, maxW = window.innerWidth;
   scale = Math.min(maxW / img.width, maxH / img.height, 1);
   canvas.width = img.width * scale;
@@ -133,17 +164,11 @@ window.addEventListener('mouseup', () => {
 
 window.addEventListener('keydown', async (e) => {
   if (e.key === 'u') { points = []; drag = null; draw(); }
-  if (e.key === ' ' && points.length === 4) {
-    // Submit is a keypress, not the fourth click: the whole point of the
-    // handles is to adjust after seeing the outline closed.
+  if (e.key === ' ' && saveable()) {
+    // Submit is a keypress or the button, not the fourth click: the whole
+    // point of the handles is to adjust after seeing the outline closed.
     e.preventDefault();
-    const res = await fetch('/api/quad', {
-      method: 'POST',
-      body: JSON.stringify({item_id: item.item_id, quad: points}),
-    });
-    // On rejection the quad is LEFT on screen -- the operator drags the
-    // offending handle rather than re-marking the card from scratch.
-    if (res.ok) { load(); } else { alert((await res.json()).error); }
+    save();
   }
   // A photograph that never decodes leaves the canvas blank and unclickable,
   // and /api/next would otherwise hand it back forever. Skipping is recorded
@@ -279,7 +304,7 @@ def serve(app: CropApp, port: int = 8765) -> None:
     done, total = app.progress()
     print(f"crop tool on http://127.0.0.1:{port}/  ({done}/{total} done)")
     print("Ctrl-C to stop; progress is saved after every card.")
-    print("Drag a box around the card, adjust the four corners, space to save.")
+    print("Drag a box around the card, adjust the four corners, space or Save.")
     print("Press s on a photo that will not load — it is skipped for good.")
     try:
         server.serve_forever()

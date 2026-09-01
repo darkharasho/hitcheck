@@ -14,6 +14,8 @@ export const PAGE = `<!doctype html>
            flex-wrap: wrap; }
   canvas { display: block; cursor: crosshair; }
   #hint { color: #9ad; }
+  #save { font: inherit; padding: 4px 12px; }
+  #save:disabled { opacity: 0.4; }
   #who { margin-left: auto; color: #777; }
   #banner { display: none; padding: 6px 12px; background: #4a3c00; color: #ffd; }
   #banner.on { display: block; }
@@ -26,6 +28,7 @@ export const PAGE = `<!doctype html>
   <span id="hint">drag a box around the card, then put corner 1 on the card's
   TOP-LEFT and the rest to match. space = save, u = start over,
   s = skip (photo will not load / no card visible)</span>
+  <button id="save" disabled>Save (space)</button>
   <span id="who"></span>
 </header>
 <div id="banner"></div>
@@ -68,6 +71,7 @@ async function load() {
     // Cleared, so the heartbeat below stops renewing a lease on a card that
     // is already marked.
     item = null;
+    saveButton.disabled = true;
     document.getElementById('card').textContent = 'done — nothing left to crop';
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     return;
@@ -82,6 +86,9 @@ async function load() {
 }
 
 function draw() {
+  // Every path that changes the quad already calls draw(), so the button's
+  // enabled state is derived here rather than tracked separately.
+  saveButton.disabled = !saveable();
   const maxH = window.innerHeight - 100, maxW = window.innerWidth;
   scale = Math.min(maxW / img.width, maxH / img.height, 1);
   canvas.width = img.width * scale;
@@ -147,6 +154,10 @@ window.addEventListener('mouseup', () => {
   draw();
 });
 
+function saveable() {
+  return points.length === 4 && Boolean(item);
+}
+
 async function post(path, body) {
   const res = await fetch(path, { method: 'POST', body: JSON.stringify(body) });
   if (res.ok) { load(); return; }
@@ -155,13 +166,25 @@ async function post(path, body) {
   say((await res.json().catch(() => ({}))).error || 'rejected');
 }
 
+function save() {
+  if (!saveable()) return;
+  post('/api/quad', { item_id: item.item_id, quad: points });
+}
+
+const saveButton = document.getElementById('save');
+// mousedown prevented rather than click handled alone: a button that takes
+// focus treats the next space as a press of itself, and the quad would go up
+// twice -- once from the keydown handler, once from the button.
+saveButton.addEventListener('mousedown', (e) => e.preventDefault());
+saveButton.addEventListener('click', save);
+
 window.addEventListener('keydown', (e) => {
   if (e.key === 'u') { points = []; drag = null; say(''); draw(); }
-  if (e.key === ' ' && points.length === 4 && item) {
-    // Submit is a keypress, not the fourth click: the whole point of the
-    // handles is to adjust after seeing the outline closed.
+  if (e.key === ' ' && saveable()) {
+    // Submit is a keypress or the button, not the fourth click: the whole
+    // point of the handles is to adjust after seeing the outline closed.
     e.preventDefault();
-    post('/api/quad', { item_id: item.item_id, quad: points });
+    save();
   }
   // A photograph that never decodes leaves the canvas blank and unclickable,
   // and /api/next would otherwise hand it back forever.
