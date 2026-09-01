@@ -18,10 +18,12 @@ import argparse
 import io
 import os
 import random
+import statistics
 import sys
 
 from PIL import Image
 
+from ..corpus.crops import CARD_SIZE
 from .curves import DEFAULT_CURVES_PATH, Curve, CurveBundle, save_bundle
 from .degrade import add_glare, motion_blur, warped_corners
 from .descriptors import blockiness, bright_tail_mass, quad_corner_deviation, reblur_ratio
@@ -81,6 +83,10 @@ def sweep_blur(images, seeds) -> Curve:
     Keyed by kernel, not strength: the forward parameter is quantised, so
     a strength-keyed table would imply a resolution the transform does
     not have.
+
+    `reblur_ratio` returns None for an image with no Laplacian energy to
+    divide by. A calibration sample of those is not a curve, so it fails
+    loudly here rather than silently calibrating on whatever remains.
     """
     seeds = list(seeds)
     points = []
@@ -93,16 +99,31 @@ def sweep_blur(images, seeds) -> Curve:
             strength = _strength_for_kernel_sweep(kernel)
             for seed in seeds:
                 ratios.append(reblur_ratio(motion_blur(image, seed, strength)))
-        points.append((float(kernel), sum(ratios) / len(ratios)))
+        measured = [r for r in ratios if r is not None]
+        if not measured:
+            raise ValueError(
+                f"no measurable re-blur ratio at kernel {kernel}: every sample "
+                "image is flat, so there is nothing to calibrate against"
+            )
+        points.append((float(kernel), sum(measured) / len(measured)))
     return Curve(name="blur", parameter="kernel", points=points)
 
 
 def sweep_glare(images, seeds) -> Curve:
-    """Mean bright-tail mass per strength, across images and seeds.
+    """MEDIAN bright-tail mass per strength, across images and seeds.
 
     Seeds matter here more than anywhere else: `add_glare` randomises the
     ellipse's centre and both radii, so a single seed's tail mass varies
     by more than a strength step.
+
+    Median, not mean, and it is the only sweep here that differs: the
+    tail-mass distribution is strongly right-skewed (a handful of bright
+    cards dominate the sum), so a mean-built curve sits above the typical
+    image at every strength and `measure.estimate_glare` inverts biased
+    low against it -- while `measure.axis_medians` aggregates the
+    estimates by MEDIAN. Calibrating and reporting with the same statistic
+    is the cheap half of that fix; the content term the other half would
+    need is out of scope (see `measure.GLARE_CAVEAT`).
     """
     seeds = list(seeds)
     points = []
@@ -112,7 +133,7 @@ def sweep_glare(images, seeds) -> Curve:
             for image in images
             for seed in seeds
         ]
-        points.append((float(strength), sum(masses) / len(masses)))
+        points.append((float(strength), statistics.median(masses)))
     return Curve(name="glare", parameter="strength", points=points)
 
 
@@ -198,7 +219,12 @@ def main(argv=None) -> int:
         with Image.open(path) as handle:
             images.append(handle.convert("RGB").copy())
 
-    bundle = build_bundle(images, size=(240, 336), seeds=range(args.seeds))
+    # The crop the estimator actually runs on. `quad_corner_deviation`
+    # normalises by the quad's own rectangle, so the perspective sweep is
+    # exactly scale-invariant and this argument is inert today -- wired to
+    # CARD_SIZE anyway so it stops reading like a coupling that isn't one,
+    # and so it stays right if the descriptor ever stops normalising.
+    bundle = build_bundle(images, size=CARD_SIZE, seeds=range(args.seeds))
     save_bundle(bundle, args.out)
     print(f"wrote {args.out}")
     for name, curve in sorted(bundle.curves.items()):

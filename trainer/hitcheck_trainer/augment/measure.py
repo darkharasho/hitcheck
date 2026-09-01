@@ -27,7 +27,7 @@ from PIL import Image
 
 from ..corpus.crops import apply_quad, load_crops, load_skips
 from ..corpus.manifest import load_manifest
-from .curves import Curve, CurveBundle, interpolate, load_bundle, nearest
+from .curves import Curve, CurveBundle, extrapolate, interpolate, load_bundle, nearest
 from .descriptors import blockiness, bright_tail_mass, quad_corner_deviation, reblur_ratio
 
 # degrade.jpeg_artifacts: quality = int(max(8, 60 - 45 * min(strength, 1.0)))
@@ -195,8 +195,17 @@ def estimate_blur(image: Image.Image, curve: Curve) -> AxisEstimate:
     `interpolate` because the forward parameter is quantised to odd
     kernel sizes and interpolating between calibrated points would claim
     a precision that does not exist.
+
+    UNAVAILABLE, not 0.0 and not 1.0, when `reblur_ratio` declines. A
+    blank slab back, a black crop and an image under 3px carry no
+    Laplacian energy for the probe to divide out, and the blur scale has
+    no slot for "nothing to measure" at either end -- 1.0 would read as
+    kernel 15, 0.0 as perfectly sharp, and both are confident fictions.
     """
-    return AxisEstimate(strength_for_kernel(round(nearest(curve, reblur_ratio(image)))))
+    ratio = reblur_ratio(image)
+    if ratio is None:
+        return AxisEstimate(None)
+    return AxisEstimate(strength_for_kernel(round(nearest(curve, ratio))))
 
 
 def estimate_perspective(quad: list[list[float]], curve: Curve) -> AxisEstimate:
@@ -215,9 +224,19 @@ def estimate_perspective(quad: list[list[float]], curve: Curve) -> AxisEstimate:
     systematically below `shift`. Rather than derive that constant, the
     curve measures it -- which also means the estimator stays correct if
     `perspective_warp`'s jitter distribution ever changes.
+
+    NEVER SATURATES. `perspective_warp` has no `min(strength, 1.0)`
+    clamp -- `shift = 0.12 * strength` is unbounded and strength 2.0 is
+    perfectly representable and perfectly recoverable -- so ">= 1.00"
+    would be a false claim about the forward transform, and one with
+    teeth: `axis_medians` EXCLUDES saturated estimates, so every
+    genuinely-warped card would be dropped from the perspective median
+    instead of pulling it up. Above the last calibrated point this
+    extrapolates the last segment (`curves.extrapolate`), which holds
+    here because the curve is straight by construction: the expected
+    corner deviation of `warped_corners` is proportional to `shift`.
     """
-    strength, saturated = interpolate(curve, quad_corner_deviation(quad))
-    return AxisEstimate(strength, saturated=saturated)
+    return AxisEstimate(extrapolate(curve, quad_corner_deviation(quad)))
 
 
 def estimate_glare(image: Image.Image, curve: Curve) -> AxisEstimate:
@@ -243,7 +262,7 @@ def estimate_glare(image: Image.Image, curve: Curve) -> AxisEstimate:
     return AxisEstimate(strength, saturated=saturated)
 
 
-def estimate_jpeg_blockiness(image: Image.Image, curve: Curve) -> AxisEstimate:
+def estimate_jpeg_blockiness(unresampled: Image.Image, curve: Curve) -> AxisEstimate:
     """JPEG strength-equivalent for inputs with no quantization table.
 
     Stream frames arrive as decoded H.264: the compression is real but the
@@ -253,10 +272,23 @@ def estimate_jpeg_blockiness(image: Image.Image, curve: Curve) -> AxisEstimate:
     the very block edges this counts. Use it only when the header is
     genuinely absent.
 
+    THE ARGUMENT MUST BE UN-RESAMPLED PIXELS, which is why it is not
+    called `image`. `blockiness` reads discontinuity across the 8x8 DCT
+    grid, and any resample destroys that grid's alignment -- measured on
+    held-out catalog scans, passing `crops.apply_quad`'s bicubic 245x342
+    output instead of the decoded frame moved the descriptor from 1.597
+    to 1.109 at strength 1.0, which inverts to roughly 0.3 against a truth
+    of 1.0. Not noise: a confident wrong answer, on exactly the
+    stream-frame path this fallback exists for. `calibrate.sweep_jpeg_
+    blockiness` measures un-resampled images, so this must too. Crops,
+    thumbnails and anything that has been through a `resize` or a
+    `transform` are all out of contract; `profile_image` enforces this by
+    only ever passing its `source`.
+
     Saturates for the same reason `estimate_jpeg` does: quality bottoms
     out at 15 and the descriptor goes flat past strength 1.0.
     """
-    strength, saturated = interpolate(curve, blockiness(image))
+    strength, saturated = interpolate(curve, blockiness(unresampled))
     return AxisEstimate(strength, saturated=saturated)
 
 
@@ -275,10 +307,16 @@ def profile_image(
     glare come from here; a blurry desk behind a sharp card is not a
     degradation of the card.
 
-    `source` is the ORIGINAL FILE as opened, header intact and NOT
-    `.convert()`ed (which drops `quantization`). The JPEG axis is read
-    exactly from it. Without it, or without a table in it, the axis falls
-    back to blockiness measured on `image`.
+    `source` is the ORIGINAL FILE as opened -- un-resampled, header
+    intact and NOT `.convert()`ed (which drops `quantization`). The JPEG
+    axis is read exactly from it; if it carries no quantization table
+    (a PNG, a decoded stream frame) the axis falls back to blockiness
+    measured on `source` ITSELF, never on `image`. `image` is a bicubic
+    resample and the resample destroys the 8x8 DCT grid the blockiness
+    descriptor reads -- see `estimate_jpeg_blockiness`. Without a
+    `source` at all the JPEG axis reports unavailable rather than
+    measuring the crop: declining is the only answer that is not
+    confidently wrong.
 
     `quad` is the card's corners IN THE ORIGINAL PHOTOGRAPH'S
     COORDINATES. Unwarping the crop is exactly what destroys this
@@ -288,9 +326,12 @@ def profile_image(
     """
     curves = (bundle or load_bundle()).curves
 
-    jpeg = estimate_jpeg(source) if source is not None else AxisEstimate(None)
-    if jpeg.strength is None:
-        jpeg = estimate_jpeg_blockiness(image, curves["jpeg_blockiness"])
+    if source is None:
+        jpeg = AxisEstimate(None)
+    else:
+        jpeg = estimate_jpeg(source)
+        if jpeg.strength is None:
+            jpeg = estimate_jpeg_blockiness(source, curves["jpeg_blockiness"])
 
     perspective = (
         estimate_perspective(quad, curves["perspective"])
@@ -307,6 +348,28 @@ def profile_image(
 
 
 DEFAULT_CORPUS = "data/corpus"
+
+# The glare axis is the one number in this output that must NOT be quoted
+# as a corpus figure. `bright_tail_mass` counts luma above a fixed
+# threshold, so the content term is larger than the whole signal: measured
+# on catalog scans, undegraded baseline tail mass spans 0.0018-0.0346
+# while the entire calibrated glare curve spans 0.0285-0.0513. Two of
+# twelve UNDEGRADED images already estimate glare 0.09 and 0.26. A card on
+# a white desk therefore reads more glared than the same card on black,
+# and a source whose luma tops out below the threshold reads baseline no
+# matter how much glare it carries. Fixing that needs a per-image
+# undegraded reference, which a real stream frame does not have -- so the
+# axis stays under-informative on purpose, and is labelled rather than
+# quietly printed beside three numbers that ARE comparable.
+GLARE_CAVEAT_MARKER = "  [indicative only]"
+GLARE_CAVEAT = (
+    "GLARE IS INDICATIVE ONLY and must not go in the M2 write-up as a corpus "
+    "figure. bright_tail_mass carries a content term larger than the glare "
+    "signal itself (a card on a white desk reads glared; a dim card reads "
+    "clean at any glare), so this number is comparable only between images "
+    "from the SAME source under the SAME lighting -- never across sources, "
+    "and never against a later stream corpus. The other three axes are."
+)
 
 AXES = ("jpeg", "blur", "perspective", "glare")
 
@@ -376,6 +439,7 @@ def main(argv=None) -> int:
     for axis, (median, measured, saturated) in axis_medians(profiles).items():
         value = "unavailable" if median is None else f"{median:.3f}"
         note = f" ({saturated} saturated, excluded)" if saturated else ""
+        note += GLARE_CAVEAT_MARKER if axis == "glare" else ""
         print(f"  {axis:12s} {value:>12s}  n={measured}{note}")
 
     print()
@@ -389,6 +453,8 @@ def main(argv=None) -> int:
           "roughly 0.4 as the descriptor saturates.")
     print("Measured on seller photographs, which are well-lit, static and "
           "high-resolution. A stream frame sits further along every axis.")
+    print()
+    print(GLARE_CAVEAT)
     return 0
 
 

@@ -12,6 +12,7 @@ from hitcheck_trainer.augment.calibrate import (
     sweep_jpeg_blockiness,
     sweep_perspective,
 )
+from hitcheck_trainer.corpus.crops import CARD_SIZE
 
 
 def card_like(size=(160, 224), seed=7):
@@ -75,6 +76,39 @@ def test_sweep_glare_is_monotone_across_the_strength_range():
     assert curve.descriptors() == sorted(curve.descriptors())
 
 
+def test_sweep_glare_stores_the_median_not_the_mean():
+    """The curve has to be built from the statistic that reads it.
+
+    `measure.axis_medians` aggregates per-image estimates by MEDIAN, but
+    this sweep stored the MEAN. Tail mass is strongly right-skewed -- a
+    handful of bright cards dominate the sum -- so a mean-built curve sits
+    above the typical image at every strength and the inversion is biased
+    low: measured on 12 held-out catalog scans x 4 seeds, a fully-glared
+    image reported 0.58 and a quarter of them simultaneously read
+    ">= 1.00" and fell out of the median entirely.
+
+    Checked with one deliberately bright outlier in the sample, which is
+    exactly where mean and median part company.
+    """
+    import statistics
+
+    from hitcheck_trainer.augment.degrade import add_glare
+    from hitcheck_trainer.augment.descriptors import bright_tail_mass
+
+    images = sample_images() + [Image.new("RGB", (160, 224), (255, 255, 255))]
+    seeds = list(range(4))
+    curve = sweep_glare(images, seeds=seeds)
+
+    for strength, descriptor in curve.points:
+        masses = [
+            bright_tail_mass(add_glare(image, seed, strength))
+            for image in images
+            for seed in seeds
+        ]
+        assert descriptor == pytest.approx(statistics.median(masses))
+        assert descriptor != pytest.approx(sum(masses) / len(masses))
+
+
 def test_sweep_jpeg_blockiness_is_monotone_across_the_strength_range():
     curve = sweep_jpeg_blockiness(sample_images())
     assert curve.parameter == "strength"
@@ -82,7 +116,7 @@ def test_sweep_jpeg_blockiness_is_monotone_across_the_strength_range():
 
 
 def test_build_bundle_produces_exactly_the_four_curves_measure_asks_for():
-    bundle = build_bundle(sample_images(), size=(240, 336), seeds=range(2))
+    bundle = build_bundle(sample_images(), size=CARD_SIZE, seeds=range(2))
     assert set(bundle.curves) == {"perspective", "blur", "glare", "jpeg_blockiness"}
     assert bundle.sample_images == 3
     assert bundle.seeds == 2

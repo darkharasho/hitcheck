@@ -33,13 +33,21 @@ def luma(image: Image.Image) -> np.ndarray:
     return np.asarray(image.convert("L"), dtype=np.float64)
 
 
-def laplacian_energy(gray: np.ndarray) -> float:
+def laplacian_energy(gray: np.ndarray) -> float | None:
     """Variance of the 4-neighbour Laplacian -- the standard sharpness proxy.
 
     Used only as the numerator and denominator of a ratio (see
     `reblur_ratio`); the raw value is far too content-dependent to compare
     across a corpus spanning plain commons and busy full-arts.
+
+    Returns None -- never NaN -- when the image has no interior pixels to
+    take a Laplacian over (either dimension under 3px). `np.var` of the
+    empty slice would give NaN with a RuntimeWarning, and NaN compares
+    False against every threshold downstream, which is exactly how a
+    degenerate input turns into a confident number.
     """
+    if gray.shape[0] < 3 or gray.shape[1] < 3:
+        return None
     lap = (
         gray[:-2, 1:-1]
         + gray[2:, 1:-1]
@@ -50,7 +58,7 @@ def laplacian_energy(gray: np.ndarray) -> float:
     return float(lap.var())
 
 
-def reblur_ratio(image: Image.Image) -> float:
+def reblur_ratio(image: Image.Image) -> float | None:
     """How little a known probe blur changes this image. Rises with blur.
 
     Raw Laplacian variance cannot be used directly: a busy full-art scores
@@ -58,14 +66,22 @@ def reblur_ratio(image: Image.Image) -> float:
     sharp image collapses and an already-blurred one barely moves, and the
     content-dependent scale divides out of the ratio.
 
-    A flat image (zero Laplacian energy either side) returns 1.0 -- "the
-    probe changed nothing" -- rather than raising. A blank slab back is a
-    real input.
+    Returns None -- UNMEASURABLE, not a reading -- when the image carries
+    no Laplacian energy to divide by: a blank slab back, a black crop, a
+    blown-out frame, or an image too small to take a Laplacian over. Those
+    are real inputs, so this must not raise; but it must not answer
+    either. An earlier version returned 1.0 here ("the probe changed
+    nothing"), which reads as MAXIMUM blur against a curve that is
+    increasing in blur and tops out near 0.05 -- a flat crop profiled as
+    blur 1.00. The scale has no slot for "nothing to measure", so the
+    honest answer is outside it.
     """
     base = laplacian_energy(luma(image))
-    if base <= 0.0:
-        return 1.0
+    if base is None or not base > 0.0:
+        return None
     probed = laplacian_energy(luma(image.filter(ImageFilter.GaussianBlur(PROBE_RADIUS))))
+    if probed is None:
+        return None
     return float(probed / base)
 
 
@@ -115,18 +131,57 @@ def blockiness(image: Image.Image) -> float:
     return float(np.mean(ratios))
 
 
+def quad_orientation(points: np.ndarray) -> float:
+    """The quad's dominant in-plane rotation, in radians.
+
+    Both pairs of opposite edges vote. The two "horizontal" edges
+    (top-left->top-right and bottom-left->bottom-right) vote directly; the
+    two "vertical" edges are turned -90 degrees, (x, y) -> (y, -x), so
+    they vote on the same axis instead of on one 90 degrees away. Summing
+    the vectors rather than averaging their angles avoids the wrap at
+    +/-pi entirely.
+
+    A perspective warp perturbs the four edges in different directions, so
+    they partly cancel and the recovered angle stays near the quad's true
+    orientation. A pure rotation moves all four the same way and is
+    recovered exactly.
+    """
+    horizontal = (points[1] - points[0]) + (points[2] - points[3])
+    vertical = (points[3] - points[0]) + (points[2] - points[1])
+    total = horizontal + np.array([vertical[1], -vertical[0]], dtype=np.float64)
+    if not np.hypot(total[0], total[1]) > 0.0:
+        return 0.0
+    return float(np.arctan2(total[1], total[0]))
+
+
 def quad_corner_deviation(quad: list[list[float]]) -> float:
     """Max corner offset from the quad's best-fit rectangle, as a fraction of it.
 
     `quad` is four [x, y] pairs in `corpus.crops.Quad` order: the card's
     top-left first, then clockwise.
 
-    The best-fit rectangle is the least-squares axis-aligned one, which
-    for this corner ordering has the closed form below (each edge is the
-    mean of the two corners that define it). Deviations are normalised by
-    that rectangle's OWN width and height, not the image's: how much desk
-    the seller photographed is not a degradation, and normalising by the
-    image would make the same warp read differently at different framings.
+    ROTATION-INVARIANT, and that is the load-bearing property. The
+    best-fit rectangle below is AXIS-ALIGNED, so measured on the raw quad
+    a perfectly flat card merely tilted on the desk reads as perspective:
+    5 degrees of in-plane rotation measured perspective-equivalent 0.80
+    against the calibrated curve, 10 degrees measured off the top of it.
+    Calibration never saw that, because `sweep_perspective` only ever
+    feeds it `warped_corners` output, which jitters an AXIS-ALIGNED
+    rectangle -- but corpus quads are hand-clicked around slabs lying on a
+    desk, and `crops.apply_quad`'s own docstring notes that a card
+    photographed at an angle has no meaningful topmost corner. So the quad
+    is de-rotated by its dominant orientation (`quad_orientation`) about
+    its centroid first, and only the residual -- the part a rotation
+    cannot explain -- is measured. In-plane rotation is not a degradation
+    `degrade.py` applies, and must not be charged to the perspective axis.
+
+    The best-fit rectangle is the least-squares axis-aligned one of the
+    DE-ROTATED quad, which for this corner ordering has the closed form
+    below (each edge is the mean of the two corners that define it).
+    Deviations are normalised by that rectangle's OWN width and height,
+    not the image's: how much desk the seller photographed is not a
+    degradation, and normalising by the image would make the same warp
+    read differently at different framings.
 
     `degrade.perspective_warp` displaces all four corners of a full-frame
     rectangle, so on a warped full frame this rectangle is that frame and
@@ -136,6 +191,12 @@ def quad_corner_deviation(quad: list[list[float]]) -> float:
     points = np.asarray(quad, dtype=np.float64)
     if points.shape != (4, 2):
         raise ValueError(f"expected 4 [x, y] points, got shape {points.shape}")
+
+    theta = quad_orientation(points)
+    cos, sin = np.cos(-theta), np.sin(-theta)
+    rotation = np.array([[cos, -sin], [sin, cos]], dtype=np.float64)
+    centre = points.mean(axis=0)
+    points = (points - centre) @ rotation.T + centre
 
     left = (points[0, 0] + points[3, 0]) / 2.0
     right = (points[1, 0] + points[2, 0]) / 2.0

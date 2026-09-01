@@ -15,6 +15,7 @@ by construction rather than by a conversion someone has to maintain.
 
 import itertools
 import json
+import math
 import os
 from dataclasses import dataclass
 
@@ -70,6 +71,24 @@ class CurveBundle:
     curves: dict[str, Curve]
 
 
+def _reject_non_finite(curve: Curve, descriptor: float) -> None:
+    """A non-finite descriptor is a bug upstream, not a reading. Fail loudly.
+
+    All three inverters share this because their silent failures differ
+    and none of them is safe: `min(..., key=abs(p[1] - nan))` compares
+    False every time and returns the FIRST point (kernel 1, "perfectly
+    sharp"), while `interpolate` falls through to an AssertionError. A
+    descriptor that cannot be measured must arrive here as `None` and be
+    turned into an unavailable `AxisEstimate` by the caller, never as NaN.
+    """
+    if not math.isfinite(descriptor):
+        raise ValueError(
+            f"descriptor {descriptor} is not finite; curve {curve.name!r} cannot "
+            "invert it. An unmeasurable descriptor must be reported as None "
+            "(unavailable), not passed through as NaN."
+        )
+
+
 def interpolate(curve: Curve, descriptor: float) -> tuple[float, bool]:
     """Invert `curve` at `descriptor`. Returns (parameter_value, saturated).
 
@@ -80,6 +99,7 @@ def interpolate(curve: Curve, descriptor: float) -> tuple[float, bool]:
     has gone flat and the true value is unrecoverable. Extrapolating past
     the end would invent a number the data cannot support.
     """
+    _reject_non_finite(curve, descriptor)
     points = curve.points
     if descriptor <= points[0][1]:
         return (float(points[0][0]), False)
@@ -94,6 +114,43 @@ def interpolate(curve: Curve, descriptor: float) -> tuple[float, bool]:
     raise AssertionError(f"descriptor {descriptor} fell through curve {curve.name!r}")
 
 
+def extrapolate(curve: Curve, descriptor: float) -> float:
+    """Invert `curve`, extending the last segment instead of saturating.
+
+    For the axes whose forward transform has NO `min(strength, 1.0)`
+    clamp. `perspective_warp`'s `shift = 0.12 * strength` is unbounded and
+    strength 2.0 is both representable and recoverable, so reporting
+    ">= 1.0" above the last calibrated point would be a false claim about
+    the forward model -- and, because `measure.axis_medians` EXCLUDES
+    saturated estimates, it would silently drop exactly the most-warped
+    cards out of the corpus median.
+
+    Extrapolation is only defensible where the curve is straight, and the
+    perspective curve is straight by construction: `warped_corners` scales
+    a fixed uniform draw by `shift = 0.12 * strength`, so its expected
+    corner deviation is proportional to strength. Measured on the shipped
+    curve, descriptor/strength runs 0.06412 / 0.06402 / 0.06392 / 0.06382
+    / 0.06373 across the five non-zero points -- a 0.6% droop end to end,
+    from the de-rotation in `quad_corner_deviation` absorbing slightly
+    more of a larger jitter. The slope of the last segment is the slope
+    everywhere to well inside this axis's per-image noise.
+
+    Below the first point this clamps exactly like `interpolate` -- "less
+    degraded than anything calibrated" is a real reading with a floor at
+    the curve's first parameter, not an invitation to report a negative
+    strength.
+    """
+    _reject_non_finite(curve, descriptor)
+    points = curve.points
+    if descriptor <= points[0][1]:
+        return float(points[0][0])
+    if descriptor < points[-1][1]:
+        return interpolate(curve, descriptor)[0]
+    (v0, d0), (v1, d1) = points[-2], points[-1]
+    # d1 > d0 by Curve.__post_init__'s strict monotonicity check.
+    return float(v1 + (descriptor - d1) * (v1 - v0) / (d1 - d0))
+
+
 def nearest(curve: Curve, descriptor: float) -> float:
     """Parameter value of the closest calibrated point.
 
@@ -103,6 +160,7 @@ def nearest(curve: Curve, descriptor: float) -> float:
     so only odd sizes are reachable and there is no such thing as a
     kernel of 4.
     """
+    _reject_non_finite(curve, descriptor)
     return float(min(curve.points, key=lambda p: abs(p[1] - descriptor))[0])
 
 

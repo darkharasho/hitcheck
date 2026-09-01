@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 from PIL import Image, ImageFilter
 
+from hitcheck_trainer.augment.degrade import warped_corners
 from hitcheck_trainer.augment.descriptors import (
     blockiness,
     bright_tail_mass,
@@ -76,12 +77,39 @@ def test_reblur_ratio_rises_monotonically_with_existing_blur():
     assert ratios[0] < ratios[-1]
 
 
-def test_reblur_ratio_is_bounded_and_defined_on_a_flat_image():
-    # A flat image has zero Laplacian energy; the ratio is 0/0. Returning
-    # 1.0 ("a probe blur changes nothing") is the honest reading, and it
-    # must not raise -- a blank slab back or an over-exposed frame is a
-    # real input.
-    assert reblur_ratio(Image.new("RGB", (64, 64), (128, 128, 128))) == 1.0
+def test_reblur_ratio_declines_on_a_flat_image_rather_than_reading_1_0():
+    # A flat image has zero Laplacian energy; the ratio is 0/0. It must
+    # not raise -- a blank slab back, a black crop or a blown-out frame is
+    # a real input -- but it must not answer either.
+    #
+    # This used to return 1.0 ("a probe blur changes nothing"). The blur
+    # curve is INCREASING in blur and its top point is ~0.0496, so 1.0 is
+    # twenty times the most-blurred calibrated reading: `nearest` mapped
+    # it to kernel 15 and a blank slab back profiled as blur 1.00,
+    # MAXIMUM blur. The scale has no slot for "nothing to measure".
+    for flat in (
+        Image.new("RGB", (64, 64), (128, 128, 128)),
+        Image.new("RGB", (245, 342), (0, 0, 0)),
+        Image.new("RGB", (245, 342), (255, 255, 255)),
+    ):
+        assert reblur_ratio(flat) is None
+
+
+@pytest.mark.parametrize("size", [(1, 1), (2, 2), (1, 500), (500, 2)])
+def test_reblur_ratio_declines_on_an_image_too_small_to_take_a_laplacian(size):
+    # Under 3px the Laplacian slices to an empty array and np.var gives
+    # NaN with a RuntimeWarning. NaN compares False against every
+    # threshold downstream, so `nearest`'s min-over-NaN returned the FIRST
+    # calibrated point -- kernel 1 -- and the estimator reported a
+    # confident blur 0.00. Same defect as the flat-image case, opposite
+    # end of the scale; same answer.
+    assert reblur_ratio(Image.new("RGB", size, (30, 90, 200))) is None
+
+
+def test_laplacian_energy_declines_rather_than_returning_nan_when_too_small():
+    assert laplacian_energy(np.zeros((2, 40))) is None
+    assert laplacian_energy(np.zeros((40, 2))) is None
+    assert laplacian_energy(np.zeros((3, 3))) == 0.0
 
 
 def test_bright_tail_mass_is_zero_on_a_dark_image():
@@ -132,6 +160,61 @@ def test_quad_corner_deviation_grows_with_the_corner_push():
         return [[0.0, 0.0], [100.0 + dx, 0.0], [100.0, 140.0], [0.0, 140.0]]
 
     assert quad_corner_deviation(pushed(5.0)) < quad_corner_deviation(pushed(15.0))
+
+
+def rotated_rectangle(degrees, size=(240.0, 336.0), centre=(500.0, 400.0)):
+    """A perfectly flat rectangle, rotated in-plane by `degrees`."""
+    w, h = size
+    points = np.float64([[0, 0], [w, 0], [w, h], [0, h]])
+    points -= points.mean(axis=0)
+    theta = np.radians(degrees)
+    cos, sin = np.cos(theta), np.sin(theta)
+    points = points @ np.array([[cos, -sin], [sin, cos]]).T
+    return (points + np.float64(centre)).tolist()
+
+
+@pytest.mark.parametrize("degrees", [-30.0, -10.0, -5.0, -2.0, 2.0, 5.0, 10.0, 20.0, 45.0])
+def test_quad_corner_deviation_is_blind_to_pure_in_plane_rotation(degrees):
+    # THE reason this descriptor de-rotates. Corpus quads are hand-clicked
+    # around slabs lying on a desk, and a slab is never laid down square.
+    # Measured against the axis-aligned best-fit rectangle this used to
+    # use, a perfectly flat card read: 2 deg -> perspective 0.32, 5 deg ->
+    # 0.80, 10 deg and 20 deg -> off the top of the curve. In-plane
+    # rotation is not something degrade.py applies and must not be charged
+    # to the perspective axis.
+    assert quad_corner_deviation(rotated_rectangle(degrees)) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_quad_corner_deviation_still_sees_a_warp_hiding_under_a_rotation():
+    # De-rotating must not de-warp. A quad that is warped AND tilted has
+    # to read the same as the same warp lying square.
+    square = [[0.0, 0.0], [240.0, 0.0], [222.0, 336.0], [11.0, 322.0]]
+    flat = quad_corner_deviation(square)
+    assert flat > 0.01
+
+    points = np.asarray(square, dtype=np.float64)
+    centre = points.mean(axis=0)
+    theta = np.radians(17.0)
+    cos, sin = np.cos(theta), np.sin(theta)
+    tilted = ((points - centre) @ np.array([[cos, -sin], [sin, cos]]).T + centre).tolist()
+    assert quad_corner_deviation(tilted) == pytest.approx(flat, rel=1e-9)
+
+
+def test_quad_corner_deviation_recovers_the_forward_warp_after_de_rotation():
+    # The forward model still inverts: mean deviation over seeds has to
+    # rise with `perspective_warp`'s strength, monotonically and from
+    # exactly zero.
+    means = [
+        sum(
+            quad_corner_deviation(warped_corners((240, 336), seed, s).tolist())
+            for seed in range(200)
+        )
+        / 200
+        for s in (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
+    ]
+    assert means[0] == pytest.approx(0.0, abs=1e-12)
+    assert means == sorted(means)
+    assert means[-1] > means[1] * 4
 
 
 def test_quad_corner_deviation_rejects_a_degenerate_quad():

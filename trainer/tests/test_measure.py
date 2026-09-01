@@ -5,12 +5,32 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from hitcheck_trainer.augment.curves import (
+    Curve,
+    CurveBundle,
+    extrapolate,
+    interpolate,
+    nearest,
+)
+from hitcheck_trainer.augment.degrade import add_glare, motion_blur, warped_corners
+from hitcheck_trainer.augment.descriptors import (
+    blockiness,
+    bright_tail_mass,
+    quad_corner_deviation,
+    reblur_ratio,
+)
 from hitcheck_trainer.augment.measure import (
     AxisEstimate,
     DegradationProfile,
     axis_medians,
+    estimate_blur,
+    estimate_glare,
     estimate_jpeg,
+    estimate_jpeg_blockiness,
+    estimate_perspective,
     jpeg_quality,
+    profile_image,
+    strength_for_kernel,
 )
 from hitcheck_trainer.augment.measure import main as measure_main
 
@@ -103,15 +123,6 @@ def test_profile_summary_names_every_axis_and_never_collapses_them():
     assert not hasattr(profile, "mean")
     assert not hasattr(profile, "overall")
 
-
-from hitcheck_trainer.augment.curves import Curve
-from hitcheck_trainer.augment.degrade import motion_blur, warped_corners
-from hitcheck_trainer.augment.descriptors import quad_corner_deviation, reblur_ratio
-from hitcheck_trainer.augment.measure import (
-    estimate_blur,
-    estimate_perspective,
-    strength_for_kernel,
-)
 
 KERNELS = (1, 3, 5, 7, 9, 11, 13, 15)
 
@@ -219,6 +230,52 @@ def test_blur_estimate_is_zero_on_an_unblurred_image():
     assert estimate_blur(image, blur_curve(image)).strength == pytest.approx(0.0)
 
 
+def test_blur_estimate_is_unavailable_on_a_flat_image_not_maximum_blur():
+    """The reviewer's exact symptom: a black crop profiled as blur 1.00.
+
+    `reblur_ratio` used to return 1.0 for an image with no Laplacian
+    energy, meaning "the probe changed nothing". But the blur curve is
+    INCREASING and tops out at ~0.0496, so 1.0 snapped to kernel 15 and
+    `strength_for_kernel(15)` is 1.00. A blank slab back, a very dark
+    photograph and a blown-out crop -- all real inputs -- reported
+    MAXIMUM blur with no hint anything was wrong.
+    """
+    curve = blur_curve(card_like())
+    for flat in (
+        Image.new("RGB", (245, 342), (0, 0, 0)),
+        Image.new("RGB", (245, 342), (255, 255, 255)),
+        Image.new("RGB", (245, 342), (128, 128, 128)),
+    ):
+        estimate = estimate_blur(flat, curve)
+        assert estimate.strength is None
+        assert str(estimate) == "unavailable"
+
+
+@pytest.mark.parametrize("size", [(1, 1), (2, 2), (1, 500)])
+def test_blur_estimate_is_unavailable_on_a_degenerate_image_not_zero(size):
+    # The other end of the same defect: under 3px the descriptor was NaN,
+    # `nearest`'s min-over-NaN compared False every time and returned the
+    # FIRST calibrated point (kernel 1), and the estimator reported a
+    # confident blur 0.00.
+    curve = blur_curve(card_like())
+    assert estimate_blur(Image.new("RGB", size, (200, 30, 30)), curve).strength is None
+
+
+def test_a_non_finite_descriptor_is_refused_by_every_inverter_not_absorbed():
+    # Two NaN behaviours in one module was the underlying bug: interpolate
+    # raised, nearest silently returned the first point. Both refuse now,
+    # the same way, so an unmeasurable descriptor can only ever reach a
+    # caller as None.
+    curve = blur_curve(card_like())
+    for invert in (
+        lambda c, d: interpolate(c, d),
+        lambda c, d: nearest(c, d),
+        lambda c, d: extrapolate(c, d),
+    ):
+        with pytest.raises(ValueError, match="not finite"):
+            invert(curve, float("nan"))
+
+
 def test_blur_estimate_is_ordered_across_strengths():
     # Weaker than round-tripping and independent of it: even where
     # quantisation makes two nearby strengths land on one kernel, the
@@ -264,24 +321,81 @@ def test_perspective_estimate_is_zero_for_an_unwarped_rectangle():
     assert estimate_perspective(quad, perspective_curve()).strength == pytest.approx(0.0)
 
 
-def test_perspective_estimate_saturates_above_the_calibrated_range():
+def test_perspective_estimate_never_reports_saturation():
+    """Saturation is a claim about the FORWARD transform, and it is false here.
+
+    `add_glare` and `jpeg_artifacts` clamp with `min(strength, 1.0)`, so
+    above 1.0 they produce identical pixels and ">= 1.0" is the honest
+    report. `perspective_warp` has no clamp -- `shift = 0.12 * strength`
+    is unbounded -- so strength 2.0 is representable, recoverable, and
+    distinguishable from 1.0.
+
+    This is not cosmetic. `axis_medians` EXCLUDES saturated estimates, so
+    a saturating perspective axis would silently drop every genuinely
+    warped card out of the corpus median and compute it over whichever
+    handful of cards happened to be laid down squarest, with a
+    reassuringly non-zero n= beside it.
+    """
     curve = perspective_curve(strengths=(0.0, 0.5, 1.0))
-    # A quad far more warped than anything calibrated: the honest answer
-    # is ">= 1.0", not an extrapolation.
     quad = [[0.0, 0.0], [240.0, 0.0], [140.0, 336.0], [0.0, 236.0]]
     estimate = estimate_perspective(quad, curve)
-    assert estimate.saturated is True
-    assert estimate.strength == pytest.approx(1.0)
+    assert estimate.saturated is False
+    assert estimate.strength > 1.0
+    assert ">=" not in str(estimate)
 
 
-from hitcheck_trainer.augment.curves import CurveBundle
-from hitcheck_trainer.augment.degrade import add_glare
-from hitcheck_trainer.augment.descriptors import blockiness, bright_tail_mass
-from hitcheck_trainer.augment.measure import (
-    estimate_glare,
-    estimate_jpeg_blockiness,
-    profile_image,
-)
+def test_perspective_estimate_extrapolates_past_the_calibrated_range():
+    """Above 1.0 the estimator is exactly as good as it is below it.
+
+    Asserted as RELATIVE recovery rather than an absolute tolerance,
+    because that is the claim extrapolation actually needs. The curve is
+    straight by construction -- `warped_corners` scales a fixed uniform
+    draw by `shift = 0.12 * strength` -- so the last segment's slope is
+    the slope everywhere, and the only error left is the offset between
+    this seed batch's draw and the calibration mean. Measured on the
+    seeds below, mean recovery runs 0.913x truth at strength 1.0 (INSIDE
+    the calibrated range) and 0.912x / 0.916x / 0.932x at 1.5 / 2.0 / 3.0
+    outside it. An absolute tolerance would hide that by growing with the
+    strength it is testing.
+    """
+    curve = perspective_curve()
+
+    def recovered(strength):
+        estimates = [
+            estimate_perspective(
+                warped_corners((240, 336), seed, strength).tolist(), curve
+            ).strength
+            for seed in range(200, 300)
+        ]
+        return sum(estimates) / len(estimates)
+
+    inside = recovered(0.8) / 0.8
+    previous = 1.0
+    for strength in (1.5, 2.0, 3.0):
+        mean = recovered(strength)
+        # Extrapolated, not clamped: strictly above the curve's top
+        # parameter and strictly increasing with the true strength.
+        assert mean > previous
+        previous = mean
+        # And no worse, proportionally, than inside the calibrated range.
+        assert mean / strength == pytest.approx(inside, abs=0.03)
+
+
+def test_perspective_estimate_ignores_an_in_plane_rotation():
+    # End to end through the estimator, not just the descriptor: a
+    # perfectly flat card tilted on a desk is 0.0 perspective. Against the
+    # pre-fix axis-aligned descriptor this read 0.80 at 5 degrees and off
+    # the top of the curve at 10.
+    curve = perspective_curve()
+    for degrees in (2.0, 5.0, 10.0, 20.0):
+        theta = np.radians(degrees)
+        cos, sin = np.cos(theta), np.sin(theta)
+        points = np.float64([[0, 0], [240, 0], [240, 336], [0, 336]])
+        centre = points.mean(axis=0)
+        tilted = ((points - centre) @ np.array([[cos, -sin], [sin, cos]]).T + centre)
+        estimate = estimate_perspective(tilted.tolist(), curve)
+        assert estimate.strength == pytest.approx(0.0, abs=1e-6)
+        assert estimate.saturated is False
 
 
 def glossy_card(size=(240, 336), seed=7):
@@ -395,6 +509,20 @@ def test_glare_estimate_is_ordered_across_strengths():
     assert estimates == sorted(estimates)
 
 
+def card_bundle(image=None):
+    """Curves calibrated in-test, on this test's own image. Not curves.json."""
+    image = image or card_like()
+    return CurveBundle(
+        generated_by="test", sample_images=1, seeds=1,
+        curves={
+            "blur": blur_curve(image),
+            "glare": glare_curve(image),
+            "perspective": perspective_curve(),
+            "jpeg_blockiness": blockiness_curve(image),
+        },
+    )
+
+
 @pytest.mark.parametrize("strength", [0.3, 0.6, 0.9])
 def test_blockiness_fallback_recovers_a_known_strength(strength):
     image = card_like()
@@ -411,51 +539,68 @@ def test_profile_image_prefers_the_header_over_the_blockiness_fallback():
     # The header read is exact; blockiness is a calibrated approximation.
     # Where both are available the exact one must win.
     image = card_like()
-    bundle = CurveBundle(
-        generated_by="test", sample_images=1, seeds=1,
-        curves={
-            "blur": blur_curve(image),
-            "glare": glare_curve(image),
-            "perspective": perspective_curve(),
-            "jpeg_blockiness": blockiness_curve(image),
-        },
-    )
+    bundle = card_bundle(image)
     source = encoded_at(0.5, image)
     profile = profile_image(image, quad=None, source=source, bundle=bundle)
     assert profile.jpeg.strength == pytest.approx(0.5, abs=0.03)
 
 
-def test_profile_image_falls_back_to_blockiness_without_a_header():
+def test_profile_image_falls_back_to_blockiness_on_the_unresampled_source():
     image = card_like()
-    bundle = CurveBundle(
-        generated_by="test", sample_images=1, seeds=1,
-        curves={
-            "blur": blur_curve(image),
-            "glare": glare_curve(image),
-            "perspective": perspective_curve(),
-            "jpeg_blockiness": blockiness_curve(image),
-        },
-    )
+    bundle = card_bundle(image)
     quality = int(max(8, 60 - 45 * 0.6))
     buf = io.BytesIO()
     image.save(buf, format="JPEG", quality=quality)
     buf.seek(0)
     decoded = Image.open(buf).convert("RGB")  # no quantization attribute
-    profile = profile_image(decoded, quad=None, source=None, bundle=bundle)
+    # `source` is the un-resampled decoded frame; `image` is the crop.
+    # Blockiness must read the former.
+    crop = decoded.resize((245, 342), Image.Resampling.BICUBIC)
+    profile = profile_image(crop, quad=None, source=decoded, bundle=bundle)
     assert profile.jpeg.strength == pytest.approx(0.6, abs=0.15)
+
+
+def test_profile_image_never_measures_blockiness_on_the_resampled_crop():
+    """The reviewer's measured symptom, as a regression test.
+
+    `blockiness` reads discontinuity across the 8x8 DCT grid.
+    `crops.apply_quad` is a bicubic perspective transform to 245x342, and
+    that resample destroys the grid: measured raw 1.597 vs 1.109 after the
+    crop-resample at strength 1.0, which inverts to roughly 0.3 against a
+    truth of 1.0. `profile_image` must not be able to produce that number
+    by accident, so it reads `source` or declines.
+    """
+    image = card_like(size=(480, 640))
+    bundle = card_bundle(card_like())
+    quality = int(max(8, 60 - 45 * 1.0))
+    buf = io.BytesIO()
+    image.save(buf, format="JPEG", quality=quality)
+    buf.seek(0)
+    decoded = Image.open(buf).convert("RGB")
+    crop = decoded.resize((245, 342), Image.Resampling.BICUBIC)
+    assert blockiness(crop) < blockiness(decoded)
+
+    profile = profile_image(crop, quad=None, source=decoded, bundle=bundle)
+    on_the_crop, _ = interpolate(
+        bundle.curves["jpeg_blockiness"], blockiness(crop)
+    )
+    assert profile.jpeg.strength > on_the_crop
+
+
+def test_profile_image_declines_the_jpeg_axis_with_no_unresampled_source():
+    # Without a `source` there are no un-resampled pixels to read, and
+    # `image` is by contract a crop. Unavailable is the only answer that
+    # is not confidently wrong -- and it is a different claim from a
+    # measured 0.0.
+    image = card_like()
+    profile = profile_image(image, quad=None, source=None, bundle=card_bundle(image))
+    assert profile.jpeg.strength is None
+    assert "jpeg=unavailable" in profile.summary()
 
 
 def test_profile_image_reports_perspective_unavailable_without_a_quad():
     image = card_like()
-    bundle = CurveBundle(
-        generated_by="test", sample_images=1, seeds=1,
-        curves={
-            "blur": blur_curve(image),
-            "glare": glare_curve(image),
-            "perspective": perspective_curve(),
-            "jpeg_blockiness": blockiness_curve(image),
-        },
-    )
+    bundle = card_bundle(image)
     profile = profile_image(image, quad=None, source=None, bundle=bundle)
     assert profile.perspective.strength is None
     assert "perspective=unavailable" in profile.summary()
@@ -527,6 +672,15 @@ def test_main_profiles_a_cropped_corpus_and_labels_the_stated_limit(tmp_path, ca
     # The two labels the spec requires on every quoted number.
     assert "degrade.py" in out
     assert "not a physical measurement" in out.lower()
+    # And the glare axis is marked indicative-only, on the line itself and
+    # in full below. estimate_glare's own docstring says "compare readings
+    # within a source, not across sources" -- the CLI must not quietly
+    # print it beside three axes that ARE comparable, and the runbook must
+    # not tell the operator to quote it in the M2 write-up.
+    glare_line = next(line for line in out.splitlines() if line.strip().startswith("glare"))
+    assert "indicative only" in glare_line
+    assert "indicative only" in out.lower()
+    assert "never across sources" in out.lower()
 
 
 def test_main_skips_entries_the_crop_tool_marked_unusable(tmp_path, capsys):
