@@ -18,8 +18,8 @@
     // Both are required. The worker refuses to serve a photograph if either
     // is missing, because an unset Access config does not fail closed on its
     // own -- it just means nobody is checked.
-    "ACCESS_TEAM_DOMAIN": "REPLACE.cloudflareaccess.com",
-    "ACCESS_AUD": "REPLACE_WITH_ACCESS_APPLICATION_AUD",
+    "ACCESS_TEAM_DOMAIN": "silent-flower-7003.cloudflareaccess.com",
+    "ACCESS_AUD": "994c3aeb7e9a961411e1ec937f3985b0428dfbec3c7bf88ad1ac8280b033c9b6",
     // How many reference cards a new cropper marks before their work counts.
     "CALIBRATION_N": "5",
     // Minutes an unfinished card stays reserved for whoever was handed it.
