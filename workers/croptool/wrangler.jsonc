@@ -9,7 +9,7 @@
   // endpoint, which must stay reachable by eBay without a login.
   "routes": [{ "pattern": "crop.axi.link", "custom_domain": true }],
   "d1_databases": [
-    { "binding": "DB", "database_name": "hitcheck-crops", "database_id": "REPLACE_WITH_D1_ID" }
+    { "binding": "DB", "database_name": "hitcheck-crops", "database_id": "602cc894-db7e-46db-a5ed-fe12333fdb5c" }
   ],
   "r2_buckets": [
     { "binding": "PHOTOS", "bucket_name": "hitcheck-corpus" }
