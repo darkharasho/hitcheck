@@ -102,7 +102,7 @@ The CLI marks it on the line and prints the caveat in full underneath.
 `bright_tail_mass` counts luma above a fixed threshold, so it carries a
 content term larger than the glare signal itself: measured on catalog
 scans, undegraded baseline tail mass spans 0.0018–0.0346 while the entire
-calibrated glare curve spans 0.0285–0.0513, and two of twelve
+calibrated glare curve spans 0.0208–0.0478, and two of twelve
 *undegraded* images already estimate glare 0.09 and 0.26. A card on a
 white desk reads glared; a dim card reads clean at any glare. That makes
 the number comparable only between images from the same source under the

@@ -353,7 +353,7 @@ DEFAULT_CORPUS = "data/corpus"
 # as a corpus figure. `bright_tail_mass` counts luma above a fixed
 # threshold, so the content term is larger than the whole signal: measured
 # on catalog scans, undegraded baseline tail mass spans 0.0018-0.0346
-# while the entire calibrated glare curve spans 0.0285-0.0513. Two of
+# while the entire calibrated glare curve spans 0.0208-0.0478. Two of
 # twelve UNDEGRADED images already estimate glare 0.09 and 0.26. A card on
 # a white desk therefore reads more glared than the same card on black,
 # and a source whose luma tops out below the threshold reads baseline no
