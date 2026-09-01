@@ -116,12 +116,20 @@ def card_like(size=(240, 336), seed=7):
     0.88-0.95 across the whole range. The gradient, art box and grain
     below give every descriptor a clean monotone response (blockiness
     1.20 -> 16.16 over the same sweep). Do not add ruled lines back.
+
+    The art box's `+ 3` offsets are load-bearing for the same reason.
+    `h // 4`, `h // 2`, `w // 4` and `3 * w // 4` are all multiples of 4
+    at every size this fixture is used at, which puts the box's edges on
+    the 8x8 grid: at 160x224 and 480x640 ALL FOUR land there, the
+    within-block denominator collapses at low quality, and blockiness
+    reaches 1.6e6 instead of ~16. Offsetting by 3 moves every edge to
+    index 2 or 6 mod 8 regardless of size. Do not "tidy" the offsets away.
     """
     rng = np.random.default_rng(seed)
     w, h = size
     arr = np.zeros((h, w, 3), dtype=np.float64)
     arr += np.linspace(40, 200, w)[None, :, None]          # background gradient
-    arr[h // 4 : h // 2, w // 4 : 3 * w // 4] = 90          # art box
+    arr[h // 4 + 3 : h // 2 + 3, w // 4 + 3 : 3 * w // 4 + 3] = 90  # art box, off-grid
     arr += rng.normal(0, 6, arr.shape)                      # a little grain
     return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
 
@@ -854,7 +862,7 @@ def card_like(size=(240, 336), seed=7):
     w, h = size
     arr = np.zeros((h, w, 3), dtype=np.float64)
     arr += np.linspace(40, 200, w)[None, :, None]
-    arr[h // 4 : h // 2, w // 4 : 3 * w // 4] = 90
+    arr[h // 4 + 3 : h // 2 + 3, w // 4 + 3 : 3 * w // 4 + 3] = 90
     arr += rng.normal(0, 6, arr.shape)
     return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
 
@@ -1684,7 +1692,7 @@ def card_like(size=(160, 224), seed=7):
     w, h = size
     arr = np.zeros((h, w, 3), dtype=np.float64)
     arr += np.linspace(40, 200, w)[None, :, None]
-    arr[h // 4 : h // 2, w // 4 : 3 * w // 4] = 90
+    arr[h // 4 + 3 : h // 2 + 3, w // 4 + 3 : 3 * w // 4 + 3] = 90
     arr += rng.normal(0, 6, arr.shape)
     return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
 
