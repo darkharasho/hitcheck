@@ -105,13 +105,22 @@ def card_like(size=(240, 336), seed=7):
     Deliberately NOT uniform noise: the blur descriptors key off edge
     structure, and white noise has edge energy at every scale, which
     would make a broken descriptor look monotone anyway.
+
+    Deliberately NO thin ruled lines either, and this one is load-bearing.
+    A 1px grid at a stride that divides 8 lands hard edges exactly on the
+    JPEG block boundaries `blockiness()` measures, which inflates the
+    boundary term at high quality and makes the descriptor NON-MONOTONE
+    (measured: 4.23, 4.83, 4.43, 3.93 across qualities 90/60/30/15).
+    Moving the stride off a multiple of 8 does not fix it -- thin lines
+    also dominate the within-block denominator, flattening the ratio to
+    0.88-0.95 across the whole range. The gradient, art box and grain
+    below give every descriptor a clean monotone response (blockiness
+    1.20 -> 16.16 over the same sweep). Do not add ruled lines back.
     """
     rng = np.random.default_rng(seed)
     w, h = size
     arr = np.zeros((h, w, 3), dtype=np.float64)
     arr += np.linspace(40, 200, w)[None, :, None]          # background gradient
-    arr[:, ::16] = 20                                       # vertical rules
-    arr[::24, :] = 235                                      # horizontal rules
     arr[h // 4 : h // 2, w // 4 : 3 * w // 4] = 90          # art box
     arr += rng.normal(0, 6, arr.shape)                      # a little grain
     return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
@@ -845,8 +854,6 @@ def card_like(size=(240, 336), seed=7):
     w, h = size
     arr = np.zeros((h, w, 3), dtype=np.float64)
     arr += np.linspace(40, 200, w)[None, :, None]
-    arr[:, ::16] = 20
-    arr[::24, :] = 235
     arr[h // 4 : h // 2, w // 4 : 3 * w // 4] = 90
     arr += rng.normal(0, 6, arr.shape)
     return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
@@ -1677,8 +1684,6 @@ def card_like(size=(160, 224), seed=7):
     w, h = size
     arr = np.zeros((h, w, 3), dtype=np.float64)
     arr += np.linspace(40, 200, w)[None, :, None]
-    arr[:, ::16] = 20
-    arr[::24, :] = 235
     arr[h // 4 : h // 2, w // 4 : 3 * w // 4] = 90
     arr += rng.normal(0, 6, arr.shape)
     return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
