@@ -19,9 +19,11 @@ def card_like(size=(160, 224), seed=7):
 
     A flat 40-200 gradient tops out at exactly `GLARE_THRESHOLD` (200), so a
     glare ellipse crosses the threshold nowhere on some seeds and
-    `bright_tail_mass` reads pure baseline -- and, independently, this
-    particular gradient produces a non-monotone `blockiness` reading at
-    this image size on this machine's libjpeg (see
+    `bright_tail_mass` reads pure baseline. That is survivable at the 12
+    seeds the glare sweep test averages over, but not at the 2 seeds
+    `build_bundle` uses, where it ties the curve. Independently, this
+    particular gradient also produces a non-monotone `blockiness` reading
+    at this image size on this machine's libjpeg (see
     `.superpowers/sdd/2026-08-31-m2-calibration-axis/task-7-report.md`).
     `tests/test_measure.py`'s `glossy_card()` fixture (real-scan luma:
     mean 98-203, p95 213-244) avoids both -- adapted here at this file's
