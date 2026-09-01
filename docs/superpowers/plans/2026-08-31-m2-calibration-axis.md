@@ -636,7 +636,8 @@ def test_bundle_round_trips_through_json(tmp_path):
     )
     path = str(tmp_path / "curves.json")
     save_bundle(bundle, path)
-    assert json.loads(open(path).read())["curves"]["glare"]["parameter"] == "strength"
+    with open(path) as fh:
+        assert json.load(fh)["curves"]["glare"]["parameter"] == "strength"
 
     loaded = load_bundle(path)
     assert loaded.sample_images == 4
@@ -676,6 +677,7 @@ sweep drives `degrade.py` itself -- keeps the units native to `degrade.py`
 by construction rather than by a conversion someone has to maintain.
 """
 
+import itertools
 import json
 import os
 from dataclasses import dataclass
@@ -738,7 +740,7 @@ def interpolate(curve: Curve, descriptor: float) -> tuple[float, bool]:
         return (float(points[0][0]), False)
     if descriptor >= points[-1][1]:
         return (float(points[-1][0]), True)
-    for (v0, d0), (v1, d1) in zip(points, points[1:]):
+    for (v0, d0), (v1, d1) in itertools.pairwise(points):
         if d0 <= descriptor <= d1:
             if d1 == d0:
                 return (float(v0), False)
