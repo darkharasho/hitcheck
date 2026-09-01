@@ -8,7 +8,9 @@ that corpus actually was.
 ## What this gives you, and what it does not
 
 You get four independent strength-equivalents per image, in `degrade.py`'s
-own units, reduced to a corpus median per axis. That lets the M2 write-up
+own units, reduced to a corpus median per axis. Three of them (JPEG, blur,
+perspective) are comparable across sources; glare is not, and is marked
+indicative-only in the output — see section 3. That lets the M2 write-up
 say "these photographs sit at blur-equivalent 0.1, JPEG-equivalent 0.15"
 instead of "seller photographs", and it is what lets a later stream corpus
 be compared against this one on the same scale.
@@ -82,8 +84,41 @@ glare axis means the corpus has genuinely blown highlights, and the median
 describes only the rest of it.
 
 **`unavailable`** is not zero. The perspective axis is unavailable without
-a recorded quad; the JPEG axis is unavailable only if the fallback also
-fails, since a header-less image routes to the blockiness descriptor.
+a recorded quad. The JPEG axis is unavailable when no un-resampled
+`source` is supplied at all — the blockiness fallback reads discontinuity
+across the 8x8 DCT grid, and a crop is a bicubic resample that destroys
+that grid, so `profile_image` measures the source or declines rather than
+returning a confidently wrong number off the crop. It never *renders*
+"unavailable" from this CLI, though, because `measure.main` always opens
+the file: a header-less corpus image routes to the fallback, and if the
+fallback's descriptor itself fails (image smaller than two 8x8 blocks) it
+raises `ValueError`, `measure.main` treats the whole entry as unreadable,
+and the entry is dropped and counted in `failed` rather than profiled with
+one missing axis. The blur axis is unavailable for a crop with no
+Laplacian energy — a blank slab back, a black or blown-out frame.
+
+**The glare axis is INDICATIVE ONLY. Do not quote it in the M2 write-up.**
+The CLI marks it on the line and prints the caveat in full underneath.
+`bright_tail_mass` counts luma above a fixed threshold, so it carries a
+content term larger than the glare signal itself: measured on catalog
+scans, undegraded baseline tail mass spans 0.0018–0.0346 while the entire
+calibrated glare curve spans 0.0285–0.0513, and two of twelve
+*undegraded* images already estimate glare 0.09 and 0.26. A card on a
+white desk reads glared; a dim card reads clean at any glare. That makes
+the number comparable only between images from the same source under the
+same lighting — never across sources, and never against a later stream
+corpus. Separating the content term needs a per-image undegraded
+reference, which a real stream frame does not have, so the axis stays
+deliberately under-informative rather than quotably wrong.
+
+**Perspective never saturates**, unlike glare and JPEG. `perspective_warp`
+has no `min(strength, 1.0)` clamp — `shift = 0.12 * strength` is
+unbounded — so above the last calibrated point the estimator extrapolates
+the curve's last segment and can legitimately report a strength above 1.0.
+A perspective reading above 1.0 is a real reading, not an overflow. The
+descriptor is also blind to in-plane rotation: a slab laid crooked on a
+desk is not a perspective degradation and is de-rotated out before
+measurement.
 
 **Perspective is noisy per image.** `perspective_warp` draws its corner
 jitter from a uniform distribution (`degrade.py:71`), so one image's
@@ -105,6 +140,8 @@ real-corpus accuracy number is being produced under materially gentler
 conditions than that point on the curve, and the gap between them is the
 margin a stream frame has to eat into.
 
-Record the medians in the M2 verification write-up next to the accuracy
-number, with the "not a physical measurement" caveat attached. An
-unlabelled axis number will be mistaken for one within a month.
+Record the JPEG, blur and perspective medians in the M2 verification
+write-up next to the accuracy number, with the "not a physical
+measurement" caveat attached. An unlabelled axis number will be mistaken
+for one within a month. **Leave glare out**, or carry its
+indicative-only caveat verbatim — see section 3.
