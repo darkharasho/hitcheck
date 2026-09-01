@@ -74,7 +74,8 @@ def test_bundle_round_trips_through_json(tmp_path):
     )
     path = str(tmp_path / "curves.json")
     save_bundle(bundle, path)
-    assert json.loads(open(path).read())["curves"]["glare"]["parameter"] == "strength"
+    with open(path) as fh:
+        assert json.load(fh)["curves"]["glare"]["parameter"] == "strength"
 
     loaded = load_bundle(path)
     assert loaded.sample_images == 4
