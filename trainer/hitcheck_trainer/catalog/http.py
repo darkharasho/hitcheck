@@ -34,3 +34,24 @@ def httpx_fetch(timeout: float = 30.0):
         return response.status_code, response.content if response.status_code == 200 else None
 
     return fetch
+
+
+def httpx_post_form(timeout: float = 30.0):
+    """Form-encoded POST returning (status, json). For eBay's OAuth grant.
+
+    The GET transports above cover every other call in this repo; the
+    token endpoint is the one place a POST is needed.
+    """
+    client = httpx.Client(timeout=timeout, follow_redirects=True)
+
+    def post(url: str, headers: dict, data: dict):
+        try:
+            response = client.post(url, headers=headers, data=data)
+        except httpx.HTTPError:
+            return 0, None
+        try:
+            return response.status_code, response.json()
+        except ValueError:
+            return response.status_code, None
+
+    return post
