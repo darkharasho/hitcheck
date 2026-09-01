@@ -38,19 +38,35 @@ def basic_auth_header(app_id: str, cert_id: str) -> str:
     return f"Basic {token}"
 
 
-def fetch_token(post, app_id: str, cert_id: str) -> str:
-    """Client-credentials grant. `post(url, headers, data) -> (status, json)`."""
-    status, body = post(
-        EBAY_OAUTH_URL,
-        {
-            "Authorization": basic_auth_header(app_id, cert_id),
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-        {"grant_type": "client_credentials", "scope": OAUTH_SCOPE},
-    )
-    if status != 200 or not body or not body.get("access_token"):
-        raise EbayError(f"oauth token request failed (status {status})")
-    return body["access_token"]
+def fetch_token(post, app_id: str, cert_id: str, max_attempts: int = 5,
+                sleep=time.sleep) -> str:
+    """Client-credentials grant. `post(url, headers, data) -> (status, json)`.
+
+    Retried on the same schedule as every other network call in the repo --
+    backoff_delays, not a second policy. A transient 503 here would
+    otherwise abort the whole acquisition run with a message that reads
+    like a credentials failure, which is an expensive misdiagnosis.
+    """
+    headers = {
+        "Authorization": basic_auth_header(app_id, cert_id),
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    data = {"grant_type": "client_credentials", "scope": OAUTH_SCOPE}
+    delays = backoff_delays(max_attempts - 1)
+    last_status = None
+    for attempt in range(max_attempts):
+        status, body = post(EBAY_OAUTH_URL, headers, data)
+        last_status = status
+        if status == 200 and body and body.get("access_token"):
+            return body["access_token"]
+        # A 200 carrying no usable token is malformed, not a success and
+        # not a hard failure -- the same call BrowseClient._get makes.
+        if not (status in RETRYABLE or status == 200):
+            break
+        if attempt < len(delays):
+            sleep(delays[attempt])
+    # The status and nothing else: never the credentials, never the token.
+    raise EbayError(f"oauth token request failed (status {last_status})")
 
 
 def hi_res_url(url: str) -> str:

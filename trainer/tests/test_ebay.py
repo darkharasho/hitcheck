@@ -2,6 +2,7 @@ import base64
 
 import pytest
 
+from hitcheck_trainer.catalog.backoff import backoff_delays
 from hitcheck_trainer.corpus.ebay import (
     BROWSE_BASE,
     EBAY_OAUTH_URL,
@@ -49,6 +50,52 @@ def test_fetch_token_raises_without_leaking_the_credentials():
     assert "401" in message
     assert "APP-SECRET" not in message
     assert "CERT-SECRET" not in message
+
+
+def test_fetch_token_retries_a_transient_5xx_before_giving_up():
+    # A 503 on the token call used to abort the whole acquisition run with a
+    # message a reader misreads as bad credentials.
+    statuses = iter([503, 503, 200])
+    slept = []
+
+    def post(url, headers, data):
+        status = next(statuses)
+        return status, {"access_token": "tok"} if status == 200 else None
+
+    assert fetch_token(post, "APP", "CERT", sleep=slept.append) == "tok"
+    assert slept == backoff_delays(2)  # the shared schedule, not a second policy
+
+
+def test_fetch_token_does_not_retry_a_401():
+    # Bad credentials are not transient; retrying wastes the operator's time.
+    attempts = []
+
+    def post(url, headers, data):
+        attempts.append(url)
+        return 401, None
+
+    with pytest.raises(EbayError):
+        fetch_token(post, "APP", "CERT", sleep=lambda s: None)
+    assert len(attempts) == 1
+
+
+def test_fetch_token_gives_up_after_max_attempts_without_leaking_credentials():
+    slept = []
+    with pytest.raises(EbayError) as exc:
+        fetch_token(lambda url, headers, data: (503, None), "APP-SECRET", "CERT-SECRET",
+                    max_attempts=3, sleep=slept.append)
+    message = str(exc.value)
+    assert "503" in message
+    assert "APP-SECRET" not in message and "CERT-SECRET" not in message
+    assert slept == backoff_delays(2)
+
+
+def test_fetch_token_retries_a_200_with_no_token_in_it():
+    # Same call BrowseClient makes on a 200 with no body: malformed, so
+    # neither a success nor a hard failure.
+    responses = iter([(200, {}), (200, {"access_token": "tok"})])
+    assert fetch_token(lambda url, headers, data: next(responses), "APP", "CERT",
+                       sleep=lambda s: None) == "tok"
 
 
 def test_hi_res_url_swaps_the_size_suffix():
