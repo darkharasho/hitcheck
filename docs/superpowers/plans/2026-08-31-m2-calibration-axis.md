@@ -619,9 +619,26 @@ def test_a_non_monotone_curve_is_rejected_at_construction():
     # A descriptor that doubles back cannot be inverted: two parameters
     # map to one reading. Catching it here rather than silently returning
     # whichever branch the search happened to land on.
-    with pytest.raises(ValueError, match="not monotone"):
+    with pytest.raises(ValueError, match="not strictly increasing"):
         Curve(name="bad", parameter="strength",
               points=[(0.0, 0.0), (0.5, 0.20), (1.0, 0.10)])
+
+
+def test_a_curve_with_a_tied_descriptor_is_rejected_too():
+    # A FLAT segment is the same defect as a doubling-back one: two
+    # parameters, one reading. Non-strict monotonicity would wave this
+    # through and leave `interpolate` to pick a side of the tie in
+    # silence, which is the plausible-looking-wrong-answer failure this
+    # module exists to prevent.
+    with pytest.raises(ValueError, match="not strictly increasing"):
+        Curve(name="bad", parameter="strength",
+              points=[(0.0, 0.0), (0.5, 0.05), (1.0, 0.05)])
+
+
+def test_a_curve_with_a_repeated_parameter_is_rejected():
+    with pytest.raises(ValueError, match="not strictly ascending"):
+        Curve(name="bad", parameter="strength",
+              points=[(0.0, 0.0), (0.5, 0.05), (0.5, 0.10)])
 
 
 def test_a_curve_with_fewer_than_two_points_is_rejected():
@@ -703,12 +720,21 @@ class Curve:
         if len(self.points) < 2:
             raise ValueError(f"curve {self.name!r} needs at least two points")
         values = [p for p, _ in self.points]
-        if values != sorted(values):
-            raise ValueError(f"curve {self.name!r} parameters are not sorted ascending")
-        descriptors = self.descriptors()
-        if descriptors != sorted(descriptors):
+        if any(b <= a for a, b in itertools.pairwise(values)):
             raise ValueError(
-                f"curve {self.name!r} descriptor is not monotone increasing: "
+                f"curve {self.name!r} parameters are not strictly ascending: {values}"
+            )
+        descriptors = self.descriptors()
+        # STRICTLY increasing, not merely non-decreasing. A tie means two
+        # parameters produce one descriptor reading -- exactly the
+        # "cannot be inverted" case this check exists for -- and
+        # `sorted()` comparison would wave it through, leaving
+        # `interpolate` to silently pick one side of the tie. On a real
+        # sweep a tie means the two settings are indistinguishable, which
+        # has to fail loudly rather than resolve to a coin flip.
+        if any(b <= a for a, b in itertools.pairwise(descriptors)):
+            raise ValueError(
+                f"curve {self.name!r} descriptor is not strictly increasing: "
                 f"{descriptors} -- two parameters map to one reading, so it "
                 "cannot be inverted. Re-run the sweep with more samples."
             )
@@ -742,8 +768,8 @@ def interpolate(curve: Curve, descriptor: float) -> tuple[float, bool]:
         return (float(points[-1][0]), True)
     for (v0, d0), (v1, d1) in itertools.pairwise(points):
         if d0 <= descriptor <= d1:
-            if d1 == d0:
-                return (float(v0), False)
+            # d1 > d0 is guaranteed by Curve.__post_init__'s strict check,
+            # so this division cannot be by zero.
             span = (descriptor - d0) / (d1 - d0)
             return (float(v0 + span * (v1 - v0)), False)
     raise AssertionError(f"descriptor {descriptor} fell through curve {curve.name!r}")
@@ -812,7 +838,7 @@ def load_bundle(path: str = DEFAULT_CURVES_PATH) -> CurveBundle:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `cd trainer && uv run pytest tests/test_curves.py -v`
-Expected: PASS, 9 tests.
+Expected: PASS, 11 tests.
 
 - [ ] **Step 5: Lint and commit**
 
@@ -2083,7 +2109,7 @@ def test_the_committed_curves_actually_separate_their_endpoints():
 - [ ] **Step 3: Run the tests**
 
 Run: `cd trainer && uv run pytest tests/test_curves.py -v`
-Expected: PASS, the 9 from Task 3 plus 4 new ones.
+Expected: PASS, the 11 from Task 3 plus 4 new ones.
 
 - [ ] **Step 4: Confirm the artifact is tracked, not ignored**
 
