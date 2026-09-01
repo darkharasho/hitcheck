@@ -1,0 +1,144 @@
+import json
+
+import pytest
+
+from hitcheck_trainer.augment.curves import (
+    Curve,
+    CurveBundle,
+    interpolate,
+    load_bundle,
+    nearest,
+    save_bundle,
+)
+
+
+def linear_curve():
+    return Curve(name="glare", parameter="strength",
+                 points=[(0.0, 0.0), (0.5, 0.05), (1.0, 0.10)])
+
+
+def test_interpolate_recovers_a_calibrated_point_exactly():
+    value, saturated = interpolate(linear_curve(), 0.05)
+    assert value == pytest.approx(0.5)
+    assert saturated is False
+
+
+def test_interpolate_is_linear_between_calibrated_points():
+    value, _ = interpolate(linear_curve(), 0.075)
+    assert value == pytest.approx(0.75)
+
+
+def test_interpolate_clamps_below_the_curve_without_flagging_saturation():
+    # Below the first point means "less degraded than anything calibrated",
+    # which is a real answer (0.0), not a saturation.
+    value, saturated = interpolate(linear_curve(), -0.01)
+    assert value == pytest.approx(0.0)
+    assert saturated is False
+
+
+def test_interpolate_flags_saturation_above_the_curve():
+    # Above the last point the forward transform has clamped and is flat.
+    # The honest report is ">= 1.0", never an extrapolated 1.7.
+    value, saturated = interpolate(linear_curve(), 0.4)
+    assert value == pytest.approx(1.0)
+    assert saturated is True
+
+
+def test_nearest_snaps_to_the_closest_calibrated_parameter():
+    curve = Curve(name="blur", parameter="kernel",
+                  points=[(1.0, 0.02), (3.0, 0.20), (5.0, 0.45)])
+    assert nearest(curve, 0.19) == pytest.approx(3.0)
+    assert nearest(curve, 0.44) == pytest.approx(5.0)
+    assert nearest(curve, 0.0) == pytest.approx(1.0)
+    assert nearest(curve, 99.0) == pytest.approx(5.0)
+
+
+def test_a_non_monotone_curve_is_rejected_at_construction():
+    # A descriptor that doubles back cannot be inverted: two parameters
+    # map to one reading. Catching it here rather than silently returning
+    # whichever branch the search happened to land on.
+    with pytest.raises(ValueError, match="not strictly increasing"):
+        Curve(name="bad", parameter="strength",
+              points=[(0.0, 0.0), (0.5, 0.20), (1.0, 0.10)])
+
+
+def test_a_curve_with_fewer_than_two_points_is_rejected():
+    with pytest.raises(ValueError, match="at least two"):
+        Curve(name="bad", parameter="strength", points=[(0.0, 0.0)])
+
+
+def test_a_curve_with_a_tied_descriptor_is_rejected_too():
+    # A FLAT segment is the same defect as a doubling-back one: two
+    # parameters, one reading. Non-strict monotonicity would wave this
+    # through and leave `interpolate` to pick a side of the tie in
+    # silence, which is the plausible-looking-wrong-answer failure this
+    # module exists to prevent.
+    with pytest.raises(ValueError, match="not strictly increasing"):
+        Curve(name="bad", parameter="strength",
+              points=[(0.0, 0.0), (0.5, 0.05), (1.0, 0.05)])
+
+
+def test_a_curve_with_a_repeated_parameter_is_rejected():
+    with pytest.raises(ValueError, match="not strictly ascending"):
+        Curve(name="bad", parameter="strength",
+              points=[(0.0, 0.0), (0.5, 0.05), (0.5, 0.10)])
+
+
+def test_bundle_round_trips_through_json(tmp_path):
+    bundle = CurveBundle(
+        generated_by="test", sample_images=4, seeds=2,
+        curves={"glare": linear_curve()},
+    )
+    path = str(tmp_path / "curves.json")
+    save_bundle(bundle, path)
+    with open(path) as fh:
+        assert json.load(fh)["curves"]["glare"]["parameter"] == "strength"
+
+    loaded = load_bundle(path)
+    assert loaded.sample_images == 4
+    assert loaded.curves["glare"].points == linear_curve().points
+
+
+def test_load_bundle_names_the_missing_file_rather_than_failing_open(tmp_path):
+    # An estimator running against a bundle that silently defaulted to
+    # empty would report every image as undegraded -- a believable wrong
+    # answer, which is the worst kind.
+    with pytest.raises(FileNotFoundError, match="calibrate"):
+        load_bundle(str(tmp_path / "absent.json"))
+
+
+from hitcheck_trainer.augment.curves import DEFAULT_CURVES_PATH
+
+
+def test_the_committed_bundle_loads_and_has_every_axis_measure_needs():
+    bundle = load_bundle(DEFAULT_CURVES_PATH)
+    assert set(bundle.curves) == {"perspective", "blur", "glare", "jpeg_blockiness"}
+    assert bundle.generated_by == "hitcheck_trainer.augment.calibrate"
+    assert bundle.sample_images >= 20
+    assert bundle.seeds >= 8
+
+
+def test_the_committed_strength_curves_reach_the_saturation_point():
+    # curves.interpolate reports saturation at the LAST point, so a curve
+    # that stopped at 0.8 would report ">= 0.8" for a fully-clamped image
+    # and understate it.
+    bundle = load_bundle(DEFAULT_CURVES_PATH)
+    for name in ("perspective", "glare", "jpeg_blockiness"):
+        values = [v for v, _ in bundle.curves[name].points]
+        assert values[0] == pytest.approx(0.0)
+        assert values[-1] == pytest.approx(1.0)
+
+
+def test_the_committed_blur_curve_covers_every_reachable_kernel():
+    bundle = load_bundle(DEFAULT_CURVES_PATH)
+    kernels = [int(v) for v, _ in bundle.curves["blur"].points]
+    assert kernels == [1, 3, 5, 7, 9, 11, 13, 15]
+
+
+def test_the_committed_curves_actually_separate_their_endpoints():
+    # Monotone is necessary but not sufficient: a curve whose descriptor
+    # barely moves across the whole range inverts every reading to noise.
+    bundle = load_bundle(DEFAULT_CURVES_PATH)
+    for name, curve in bundle.curves.items():
+        low, high = curve.descriptors()[0], curve.descriptors()[-1]
+        assert high > low * 1.2 + 1e-6, f"curve {name} is nearly flat: {low} -> {high}"

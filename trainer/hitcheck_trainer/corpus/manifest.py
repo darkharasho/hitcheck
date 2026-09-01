@@ -48,6 +48,11 @@ class Manifest:
     entries: list[CorpusEntry] = field(default_factory=list)
     discards: dict[str, int] = field(default_factory=dict)
     queries: list[str] = field(default_factory=list)
+    # Every Browse filter this corpus was acquired under, in the order
+    # they were first used. A filter decides which listings could ever
+    # have been seen, so it is selection bias and belongs beside the
+    # discard tally rather than only in whoever-ran-it's shell history.
+    filters: list[str] = field(default_factory=list)
 
     def item_ids(self) -> set[str]:
         return {e.item_id for e in self.entries}
@@ -72,6 +77,7 @@ def save_manifest(manifest: Manifest, path: str) -> None:
         "entries": [asdict(e) for e in manifest.entries],
         "discards": manifest.discards,
         "queries": manifest.queries,
+        "filters": manifest.filters,
     }
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = f"{path}.part"
@@ -91,4 +97,6 @@ def load_manifest(path: str) -> Manifest:
         entries=[CorpusEntry(**e) for e in payload.get("entries", [])],
         discards=payload.get("discards", {}),
         queries=payload.get("queries", []),
+        # Absent from every manifest written before filtering existed.
+        filters=payload.get("filters", []),
     )

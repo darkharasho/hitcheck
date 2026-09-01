@@ -36,12 +36,22 @@ PAGE = """<!doctype html>
 <header>
   <strong id="progress">loading...</strong>
   <span id="card"></span>
-  <span id="hint">click the card's top-left corner, then CLOCKWISE. u = undo, s = skip (photo will not load / no card visible)</span>
+  <span id="hint">drag a box around the card, then put corner 1 on the card's
+  TOP-LEFT and the rest to match. space = save, u = start over,
+  s = skip (photo will not load / no card visible)</span>
 </header>
 <canvas id="c"></canvas>
 <script>
-let item = null, scale = 1, points = [], img = new Image();
+// Corner 1 is drawn yellow because its placement is the one thing no
+// server-side check can catch: a quad rotated a quarter turn is still
+// simple and still clockwise, and yields a sideways crop that retrieves
+// nothing. Winding itself is safe by construction -- the rubber band
+// emits TL, TR, BR, BL, which is positive signed area in y-down image
+// space -- so validate_quad's clockwise rejection now only fires when a
+// handle is dragged past its neighbours.
+let item = null, scale = 1, points = [], drag = null, grabbed = null, img = new Image();
 const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+const HANDLE_R = 7;
 
 async function load() {
   const state = await (await fetch('/api/next')).json();
@@ -49,7 +59,7 @@ async function load() {
   if (!state.item_id) { document.getElementById('card').textContent = 'done'; return; }
   item = state;
   document.getElementById('card').textContent = state.card_id;
-  points = [];
+  points = []; drag = null; grabbed = null;
   img = new Image();
   img.onload = draw;
   img.src = '/api/image?id=' + encodeURIComponent(state.item_id);
@@ -61,34 +71,80 @@ function draw() {
   canvas.width = img.width * scale;
   canvas.height = img.height * scale;
   ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-  ctx.strokeStyle = '#0f0'; ctx.fillStyle = '#0f0'; ctx.lineWidth = 2;
+
+  if (drag) {
+    ctx.strokeStyle = '#0f0'; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+    const [a, b] = drag;
+    ctx.strokeRect(a[0] * scale, a[1] * scale, (b[0] - a[0]) * scale, (b[1] - a[1]) * scale);
+    ctx.setLineDash([]);
+    return;
+  }
+  if (points.length !== 4) return;
+
+  ctx.strokeStyle = '#0f0'; ctx.lineWidth = 2;
+  ctx.beginPath();
+  points.forEach((p, i) => i ? ctx.lineTo(p[0] * scale, p[1] * scale)
+                             : ctx.moveTo(p[0] * scale, p[1] * scale));
+  ctx.closePath(); ctx.stroke();
   points.forEach((p, i) => {
-    ctx.beginPath(); ctx.arc(p[0] * scale, p[1] * scale, 4, 0, 7); ctx.fill();
-    if (i) {
-      ctx.beginPath();
-      ctx.moveTo(points[i-1][0] * scale, points[i-1][1] * scale);
-      ctx.lineTo(p[0] * scale, p[1] * scale);
-      ctx.stroke();
-    }
+    ctx.beginPath();
+    ctx.arc(p[0] * scale, p[1] * scale, HANDLE_R, 0, 7);
+    ctx.fillStyle = i === 0 ? '#ff0' : '#0f0';
+    ctx.fill();
+    ctx.fillStyle = '#000'; ctx.font = 'bold 11px system-ui';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(String(i + 1), p[0] * scale, p[1] * scale);
   });
 }
 
-canvas.addEventListener('click', async (e) => {
+function at(e) {
   const box = canvas.getBoundingClientRect();
   // Divide by scale: the server stores ORIGINAL image pixels.
-  points.push([(e.clientX - box.left) / scale, (e.clientY - box.top) / scale]);
+  return [(e.clientX - box.left) / scale, (e.clientY - box.top) / scale];
+}
+
+canvas.addEventListener('mousedown', (e) => {
+  const p = at(e);
+  // Grab radius is in SCREEN pixels, so it stays clickable on a photo
+  // scaled down to a third of its size.
+  const near = points.findIndex(q => Math.hypot(q[0] - p[0], q[1] - p[1]) * scale < HANDLE_R * 2);
+  if (near >= 0) { grabbed = near; return; }
+  points = []; drag = [p, p];
+});
+
+window.addEventListener('mousemove', (e) => {
+  if (grabbed !== null) { points[grabbed] = at(e); draw(); }
+  else if (drag) { drag[1] = at(e); draw(); }
+});
+
+window.addEventListener('mouseup', () => {
+  if (grabbed !== null) { grabbed = null; return; }
+  if (!drag) return;
+  const [a, b] = drag;
+  const x0 = Math.min(a[0], b[0]), x1 = Math.max(a[0], b[0]);
+  const y0 = Math.min(a[1], b[1]), y1 = Math.max(a[1], b[1]);
+  drag = null;
+  // A stray click is a zero-size band, not a crop. Below a few pixels
+  // there is nothing to drag handles off of, so discard it rather than
+  // leave four coincident handles on the canvas.
+  points = (x1 - x0 > 8 && y1 - y0 > 8) ? [[x0, y0], [x1, y0], [x1, y1], [x0, y1]] : [];
   draw();
-  if (points.length === 4) {
+});
+
+window.addEventListener('keydown', async (e) => {
+  if (e.key === 'u') { points = []; drag = null; draw(); }
+  if (e.key === ' ' && points.length === 4) {
+    // Submit is a keypress, not the fourth click: the whole point of the
+    // handles is to adjust after seeing the outline closed.
+    e.preventDefault();
     const res = await fetch('/api/quad', {
       method: 'POST',
       body: JSON.stringify({item_id: item.item_id, quad: points}),
     });
-    if (res.ok) { load(); } else { alert((await res.json()).error); points = []; draw(); }
+    // On rejection the quad is LEFT on screen -- the operator drags the
+    // offending handle rather than re-marking the card from scratch.
+    if (res.ok) { load(); } else { alert((await res.json()).error); }
   }
-});
-
-window.addEventListener('keydown', async (e) => {
-  if (e.key === 'u') { points.pop(); draw(); }
   // A photograph that never decodes leaves the canvas blank and unclickable,
   // and /api/next would otherwise hand it back forever. Skipping is recorded
   // server-side so the next run does not serve it again either.
@@ -223,6 +279,7 @@ def serve(app: CropApp, port: int = 8765) -> None:
     done, total = app.progress()
     print(f"crop tool on http://127.0.0.1:{port}/  ({done}/{total} done)")
     print("Ctrl-C to stop; progress is saved after every card.")
+    print("Drag a box around the card, adjust the four corners, space to save.")
     print("Press s on a photo that will not load — it is skipped for good.")
     try:
         server.serve_forever()

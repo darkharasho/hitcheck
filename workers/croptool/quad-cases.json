@@ -1,0 +1,27 @@
+{
+  "_comment": [
+    "Shared truth table for the quad validator, which exists twice: in",
+    "src/quad.js so a cropper is told immediately, and in the trainer's",
+    "crops.validate_quad, which is the authority that gates the corpus.",
+    "Two implementations of the winding contract would otherwise drift, and",
+    "the drift would be silent -- a mirrored crop is a valid-looking crop.",
+    "Both test suites read this file, so a change to one side that the",
+    "other does not follow fails a test rather than corrupting ground truth."
+  ],
+  "cases": [
+    {"why": "the rubber band's own corner order: TL, TR, BR, BL",
+     "quad": [[10, 20], [210, 20], [210, 320], [10, 320]], "valid": true},
+    {"why": "a card photographed at an angle, still clockwise on screen",
+     "quad": [[50, 60], [300, 40], [330, 300], [80, 330]], "valid": true},
+    {"why": "three points is not a quad",
+     "quad": [[0, 0], [100, 0], [100, 140]], "valid": false},
+    {"why": "five points is not a quad",
+     "quad": [[0, 0], [100, 0], [100, 140], [0, 140], [5, 5]], "valid": false},
+    {"why": "four clicks in nearly the same place is a misclick, not a crop",
+     "quad": [[0, 0], [1, 0], [1, 1], [0, 1]], "valid": false},
+    {"why": "counter-clockwise: a rectangle that would crop mirrored",
+     "quad": [[0, 140], [100, 140], [100, 0], [0, 0]], "valid": false},
+    {"why": "bow-tie from a swapped adjacent pair, area well over the floor",
+     "quad": [[0, 0], [300, 300], [350, 0], [0, 280]], "valid": false}
+  ]
+}

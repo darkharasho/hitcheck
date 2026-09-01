@@ -41,6 +41,15 @@ DEFAULT_CORPUS = "data/corpus"
 # with status 200 but is not an image.
 IMAGE_FAILED = "IMAGE_FAILED"
 
+# Applied to every search unless --filter says otherwise. NOT_ENGLISH is
+# the single largest discard reason on the live corpus, and each one costs
+# a full detail call because the search summary does not carry the Language
+# aspect the resolver needs -- the only place to drop those listings before
+# paying for them is server-side. This narrows what the corpus can contain,
+# so it is recorded in the manifest and must be stated in the verification
+# doc: the M2 number is measured over US-located listings.
+DEFAULT_FILTER = "itemLocationCountry:US"
+
 DEFAULT_QUERIES = (
     "pokemon card psa 10",
     "pokemon card psa 9",
@@ -66,13 +75,17 @@ def _is_decodable_image(path: str) -> bool:
 
 
 def build_corpus(client, lookup, fetch, corpus_dir, manifest, queries, target,
-                 page_size=200, sleep=time.sleep, on_progress=None):
+                 page_size=200, sleep=time.sleep, on_progress=None, extra_filter=None):
     """Top the manifest up toward `target` resolved entries."""
     manifest_path = os.path.join(corpus_dir, "manifest.json")
     seen = manifest.item_ids()
     for query in queries:
         if query not in manifest.queries:
             manifest.queries.append(query)
+    # Recorded even on a rerun that adds nothing: a corpus acquired half
+    # unfiltered and half US-only is exactly what the reader needs told.
+    if extra_filter and extra_filter not in manifest.filters:
+        manifest.filters.append(extra_filter)
 
     def discard(reason):
         manifest.discards[reason] = manifest.discards.get(reason, 0) + 1
@@ -80,7 +93,8 @@ def build_corpus(client, lookup, fetch, corpus_dir, manifest, queries, target,
     for query in queries:
         offset = 0
         while len(manifest.entries) < target:
-            summaries = client.search(query, limit=page_size, offset=offset)
+            summaries = client.search(query, limit=page_size, offset=offset,
+                                      extra_filter=extra_filter)
             if not summaries:
                 break
             offset += len(summaries)
@@ -145,6 +159,11 @@ def main(argv=None) -> int:
                              "above the 500 the eval needs after cropping")
     parser.add_argument("--query", action="append", default=None,
                         help="repeatable; defaults to DEFAULT_QUERIES")
+    parser.add_argument("--filter", default=DEFAULT_FILTER,
+                        help="eBay Browse filter applied to every search; pass "
+                             "an empty string to search unfiltered. Narrowing "
+                             "this changes what the corpus can contain, so "
+                             "whatever is used is recorded in the manifest.")
     args = parser.parse_args(argv)
 
     app_id = os.environ.get("PROD_APP_ID")
@@ -164,6 +183,7 @@ def main(argv=None) -> int:
     manifest_path = os.path.join(args.corpus, "manifest.json")
     manifest = load_manifest(manifest_path)
     print(f"starting from {len(manifest.entries)} entries, target {args.target}")
+    print(f"filter: {args.filter or '(none)'}")
 
     def progress(done, total):
         print(f"\rcorpus: {done}/{total}", end="", flush=True)
@@ -172,6 +192,7 @@ def main(argv=None) -> int:
         manifest = build_corpus(
             client, lookup, httpx_fetch(), args.corpus, manifest,
             args.query or list(DEFAULT_QUERIES), args.target, on_progress=progress,
+            extra_filter=args.filter or None,
         )
     except EbayError as exc:
         print(f"\nacquisition stopped: {exc}")
