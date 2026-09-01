@@ -1,8 +1,10 @@
 import numpy as np
 from PIL import Image
 
-from hitcheck_trainer.corpus.manifest import CorpusEntry, Manifest, image_relpath
-from hitcheck_trainer.eval.real import corpus_queries, run_eval
+from hitcheck_trainer.corpus.crops import save_crops
+from hitcheck_trainer.corpus.manifest import CorpusEntry, Manifest, image_relpath, save_manifest
+from hitcheck_trainer.eval import real
+from hitcheck_trainer.eval.real import corpus_queries, main, run_eval
 
 QUAD_A = [[10, 10], [200, 10], [200, 300], [10, 300]]
 QUAD_B = [[20, 20], [210, 20], [210, 310], [20, 310]]
@@ -123,3 +125,86 @@ def test_run_eval_crops_before_embedding(tmp_path):
 
 def test_run_eval_of_an_empty_corpus_returns_no_results(tmp_path):
     assert run_eval(FakeEmbedder(), FakeIndex([]), [], []) == []
+
+
+def _write_corpus_on_disk(tmp_path, entries):
+    """Same shape as corpus(), but manifest.json/crops.json actually written --
+    main() loads from disk via load_manifest/load_crops, not from a Manifest
+    object handed to it in memory."""
+    manifest = corpus(tmp_path, entries)
+    save_manifest(manifest, str(tmp_path / "manifest.json"))
+    save_crops({item_id: QUAD_A for item_id in entries}, str(tmp_path / "crops.json"))
+
+
+def _write_dummy_index(tmp_path):
+    # main()'s --reuse-index branch only checks these two paths exist before
+    # calling the (monkeypatched) CardIndex.load -- their contents are never
+    # read in these tests.
+    index_path = tmp_path / "index.bin"
+    index_path.write_bytes(b"fake")
+    (tmp_path / "index.bin.ids.json").write_text("{}")
+    return str(index_path)
+
+
+def test_main_refuses_to_print_a_verdict_below_min_queries(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(real, "Embedder", lambda: FakeEmbedder())
+    monkeypatch.setattr(real.CardIndex, "load", staticmethod(
+        lambda path, dim: FakeIndex([("card-a", 0.1)])
+    ))
+    monkeypatch.setattr(real, "MIN_QUERIES", 2)
+
+    _write_corpus_on_disk(tmp_path, ["a"])  # 1 usable query, below the patched min of 2
+    index_path = _write_dummy_index(tmp_path)
+
+    exit_code = main(["--corpus", str(tmp_path), "--reuse-index", "--index", index_path])
+
+    assert exit_code != 0
+    out = capsys.readouterr().out
+    assert "verdict=" not in out
+    # The accuracy and interval are still printed -- only the verdict token
+    # is suppressed.
+    assert "top1=" in out
+    assert "ci95=" in out
+
+
+def test_main_prints_a_verdict_at_or_above_min_queries(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(real, "Embedder", lambda: FakeEmbedder())
+    monkeypatch.setattr(real.CardIndex, "load", staticmethod(
+        lambda path, dim: FakeIndex([("card-a", 0.1)])
+    ))
+    monkeypatch.setattr(real, "MIN_QUERIES", 2)
+
+    _write_corpus_on_disk(tmp_path, ["a", "b"])  # 2 usable queries, at the patched min
+    index_path = _write_dummy_index(tmp_path)
+
+    exit_code = main(["--corpus", str(tmp_path), "--reuse-index", "--index", index_path])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "verdict=" in out
+
+
+def test_main_prints_no_crop_and_missing_image_skip_counts_directly(tmp_path, monkeypatch, capsys):
+    # A stale crops.json entry for an item no longer in the manifest must
+    # not be mistaken for a missing-image skip, so the counts have to come
+    # from corpus_queries' own continue sites, not from len(crops).
+    manifest = corpus(tmp_path, ["a", "b", "c"], write=["a"])  # b, c missing on disk
+    save_manifest(manifest, str(tmp_path / "manifest.json"))
+    save_crops(
+        {"a": QUAD_A, "b": QUAD_B, "stale-entry-not-in-manifest": QUAD_A},
+        str(tmp_path / "crops.json"),
+    )
+
+    monkeypatch.setattr(real, "Embedder", lambda: FakeEmbedder())
+    monkeypatch.setattr(real.CardIndex, "load", staticmethod(
+        lambda path, dim: FakeIndex([("card-a", 0.1)])
+    ))
+
+    main(["--corpus", str(tmp_path), "--reuse-index", "--index", _write_dummy_index(tmp_path)])
+
+    out = capsys.readouterr().out
+    # "c" has no crop at all: no_crop=1. "b" has a crop but no image on
+    # disk: missing_image=1. The stale third crops.json key does not
+    # correspond to any manifest entry and must not be counted at all.
+    assert "no_crop=1" in out
+    assert "missing_image=1" in out

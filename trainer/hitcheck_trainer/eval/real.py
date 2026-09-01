@@ -40,7 +40,7 @@ DEFAULT_CORPUS = "data/corpus"
 MIN_QUERIES = 500
 
 
-def corpus_queries(manifest, crops, corpus_dir):
+def corpus_queries(manifest, crops, corpus_dir, skipped=None):
     """(label, path) items and their quads, index-aligned.
 
     Built in one pass on purpose: filtering one list without the other
@@ -51,14 +51,24 @@ def corpus_queries(manifest, crops, corpus_dir):
     state during an incremental hand-crop pass. An entry whose image is
     missing from disk is skipped too; main() prints both counts so a short
     run is visible instead of quietly shrinking N.
+
+    `skipped`, if given, is a dict main() reads back for its own print --
+    it is updated in place with `"no_crop"` and `"missing_image"` counts,
+    counted at the exact two `continue` sites rather than re-derived from
+    `len(crops)` afterwards, which would mis-attribute a stale crops.json
+    entry that no longer matches a manifest item.
     """
     items, quads = [], []
     for entry in manifest.entries:
         quad = crops.get(entry.item_id)
         if quad is None:
+            if skipped is not None:
+                skipped["no_crop"] = skipped.get("no_crop", 0) + 1
             continue
         path = os.path.join(corpus_dir, entry.image)
         if not (os.path.exists(path) and os.path.getsize(path) > 0):
+            if skipped is not None:
+                skipped["missing_image"] = skipped.get("missing_image", 0) + 1
             continue
         items.append((entry.card_id, path))
         quads.append(quad)
@@ -93,9 +103,12 @@ def main(argv=None) -> int:
 
     manifest = load_manifest(os.path.join(args.corpus, "manifest.json"))
     crops = load_crops(os.path.join(args.corpus, "crops.json"))
-    items, quads = corpus_queries(manifest, crops, args.corpus)
+    skipped = {}
+    items, quads = corpus_queries(manifest, crops, args.corpus, skipped=skipped)
     print(f"manifest: {len(manifest.entries)} entries, {len(crops)} cropped, "
-          f"{len(items)} usable queries")
+          f"{len(items)} usable queries "
+          f"(skipped: no_crop={skipped.get('no_crop', 0)} "
+          f"missing_image={skipped.get('missing_image', 0)})")
     print(manifest.yield_summary())
     if not items:
         print("No cropped corpus entries. Run the corpus build, then the crop tool.")
@@ -120,7 +133,18 @@ def main(argv=None) -> int:
     report = score(run_eval(embedder, index, items, quads, chunk=args.chunk))
 
     print()
-    print(report.summary())
+    if report.total < MIN_QUERIES:
+        # Below MIN_QUERIES the interval is still computed correctly, but
+        # printing a verdict here would put the literal "verdict=..." token
+        # a human might grep for on screen before the refusal banner below
+        # ever runs. Print the accuracy and interval -- still true and
+        # useful -- without the verdict.
+        low, high = report.interval
+        print(f"queries={report.total} top1={report.top1:.3f} "
+              f"ci95=[{low:.3f}, {high:.3f}] top5={report.top5:.3f} "
+              f"mean_top1_distance={report.mean_top1_distance:.4f}")
+    else:
+        print(report.summary())
     if args.label_sample:
         bound = label_noise_bound(args.label_errors or 0, args.label_sample)
         print(f"label error <= {bound:.1%} (95% bound from {args.label_errors or 0}"
