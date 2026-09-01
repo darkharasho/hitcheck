@@ -2,7 +2,7 @@ import json
 
 from PIL import Image
 
-from hitcheck_trainer.corpus.crops import load_crops
+from hitcheck_trainer.corpus.crops import load_crops, load_skips
 from hitcheck_trainer.corpus.croptool import CropApp
 from hitcheck_trainer.corpus.manifest import CorpusEntry, Manifest, image_relpath
 
@@ -152,3 +152,48 @@ def test_the_page_sends_original_image_coordinates_not_display_coordinates(tmp_p
 
     assert "scale" in PAGE
     assert "/api/quad" in PAGE
+
+
+def test_skipping_an_item_advances_past_it(tmp_path):
+    # One unrenderable photograph must never be able to trap the pass: with
+    # no skip control /api/next returns the same jammed entry forever.
+    app = make_app(tmp_path)
+    status, _, _ = app.handle("POST", "/api/skip", json.dumps({"item_id": "v1|1|0"}).encode())
+    assert status == 200
+    assert app.next_item()["item_id"] == "v1|2|0"
+
+
+def test_a_skip_persists_so_the_next_run_does_not_serve_it_again(tmp_path):
+    app = make_app(tmp_path)
+    app.handle("POST", "/api/skip", json.dumps({"item_id": "v1|1|0"}).encode())
+
+    reopened = CropApp(
+        manifest=app._manifest,
+        crops={},
+        crops_path=str(tmp_path / "crops.json"),
+        corpus_dir=str(tmp_path),
+        skips=load_skips(str(tmp_path / "skipped.json")),
+        skips_path=str(tmp_path / "skipped.json"),
+    )
+    assert reopened.next_item()["item_id"] == "v1|2|0"
+
+
+def test_skipping_an_unknown_item_is_a_400_not_a_traceback(tmp_path):
+    app = make_app(tmp_path)
+    status, _, _ = app.handle("POST", "/api/skip", json.dumps({"item_id": "nope"}).encode())
+    assert status == 400
+
+
+def test_a_skipped_item_is_not_counted_as_cropped(tmp_path):
+    # It has no quad, so counting it as done would overstate the crop pass.
+    app = make_app(tmp_path)
+    app.handle("POST", "/api/skip", json.dumps({"item_id": "v1|1|0"}).encode())
+    assert app.progress() == (0, 2)
+    assert load_crops(str(tmp_path / "crops.json")) == {}
+
+
+def test_the_page_offers_the_skip_control_and_says_so_on_screen(tmp_path):
+    from hitcheck_trainer.corpus.croptool import PAGE
+
+    assert "/api/skip" in PAGE
+    assert "skip" in PAGE.split("<script>")[0]  # documented in the header hint

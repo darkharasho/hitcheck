@@ -19,10 +19,11 @@ import sys
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from .crops import load_crops, save_crops, validate_quad
+from .crops import load_crops, load_skips, save_crops, save_skips, validate_quad
 from .manifest import load_manifest
 
 DEFAULT_CORPUS = "data/corpus"
+SKIPS_FILE = "skipped.json"
 
 PAGE = """<!doctype html>
 <html><head><meta charset="utf-8"><title>HitCheck crop tool</title>
@@ -35,7 +36,7 @@ PAGE = """<!doctype html>
 <header>
   <strong id="progress">loading...</strong>
   <span id="card"></span>
-  <span id="hint">click the card's top-left corner, then clockwise. u = undo</span>
+  <span id="hint">click the card's top-left corner, then CLOCKWISE. u = undo, s = skip (photo will not load / no card visible)</span>
 </header>
 <canvas id="c"></canvas>
 <script>
@@ -86,8 +87,18 @@ canvas.addEventListener('click', async (e) => {
   }
 });
 
-window.addEventListener('keydown', (e) => {
+window.addEventListener('keydown', async (e) => {
   if (e.key === 'u') { points.pop(); draw(); }
+  // A photograph that never decodes leaves the canvas blank and unclickable,
+  // and /api/next would otherwise hand it back forever. Skipping is recorded
+  // server-side so the next run does not serve it again either.
+  if (e.key === 's' && item) {
+    const res = await fetch('/api/skip', {
+      method: 'POST',
+      body: JSON.stringify({item_id: item.item_id}),
+    });
+    if (res.ok) { load(); } else { alert((await res.json()).error); }
+  }
 });
 window.addEventListener('resize', draw);
 load();
@@ -96,16 +107,18 @@ load();
 
 
 class CropApp:
-    def __init__(self, manifest, crops, crops_path, corpus_dir):
+    def __init__(self, manifest, crops, crops_path, corpus_dir, skips=None, skips_path=None):
         self._manifest = manifest
         self._crops = crops
         self._crops_path = crops_path
         self._corpus_dir = corpus_dir
+        self._skips = set(skips or ())
+        self._skips_path = skips_path or os.path.join(corpus_dir, SKIPS_FILE)
         self._by_id = {e.item_id: e for e in manifest.entries}
 
     def next_item(self):
         for entry in self._manifest.entries:
-            if entry.item_id not in self._crops:
+            if entry.item_id not in self._crops and entry.item_id not in self._skips:
                 return {"item_id": entry.item_id, "card_id": entry.card_id, "image": entry.image}
         return None
 
@@ -124,6 +137,18 @@ class CropApp:
         self._crops[item_id] = [[float(x), float(y)] for x, y in quad]
         # Saved per quad: a crash three hours into a pass must not cost it.
         save_crops(self._crops, self._crops_path)
+
+    def skip(self, item_id: str) -> None:
+        """Mark an item unusable so the pass can move past it.
+
+        Recorded to disk immediately, and to its own file rather than
+        crops.json -- a skip has no quad, and must not be counted as
+        cropped progress.
+        """
+        if item_id not in self._by_id:
+            raise KeyError(item_id)
+        self._skips.add(item_id)
+        save_skips(self._skips, self._skips_path)
 
     def handle(self, method: str, path: str, body: bytes) -> tuple[int, str, bytes]:
         route, _, query = path.partition("?")
@@ -151,6 +176,13 @@ class CropApp:
                 return 200, "image/jpeg", self.image_bytes(item_id)
             except (KeyError, OSError):
                 return 404, "application/json", b'{"error": "no such image"}'
+
+        if method == "POST" and route == "/api/skip":
+            try:
+                self.skip(json.loads(body)["item_id"])
+            except (ValueError, KeyError, TypeError) as exc:
+                return 400, "application/json", json.dumps({"error": str(exc)}).encode()
+            return 200, "application/json", b'{"ok": true}'
 
         if method == "POST" and route == "/api/quad":
             try:
@@ -191,6 +223,7 @@ def serve(app: CropApp, port: int = 8765) -> None:
     done, total = app.progress()
     print(f"crop tool on http://127.0.0.1:{port}/  ({done}/{total} done)")
     print("Ctrl-C to stop; progress is saved after every card.")
+    print("Press s on a photo that will not load — it is skipped for good.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -208,7 +241,10 @@ def main(argv=None) -> int:
         print(f"No manifest entries under {args.corpus}. Run the corpus build first.")
         return 1
     crops_path = os.path.join(args.corpus, "crops.json")
-    serve(CropApp(manifest, load_crops(crops_path), crops_path, args.corpus), args.port)
+    skips_path = os.path.join(args.corpus, SKIPS_FILE)
+    app = CropApp(manifest, load_crops(crops_path), crops_path, args.corpus,
+                  skips=load_skips(skips_path), skips_path=skips_path)
+    serve(app, args.port)
     return 0
 
 

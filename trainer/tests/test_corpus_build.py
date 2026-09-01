@@ -1,3 +1,7 @@
+import io
+
+from PIL import Image
+
 from hitcheck_trainer.corpus.build import IMAGE_FAILED, build_corpus
 from hitcheck_trainer.corpus.manifest import CorpusEntry, Manifest, image_relpath
 from hitcheck_trainer.corpus.resolve import CardLookup
@@ -48,8 +52,17 @@ def detail(item_id, aspects, image="https://i.ebayimg.com/g/a/s-l225.jpg"):
     }
 
 
+def jpeg_bytes(size=(20, 28), colour="red") -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", size, colour).save(buffer, "JPEG")
+    return buffer.getvalue()
+
+
+JPEG = jpeg_bytes()
+
+
 def ok_fetch(url):
-    return 200, b"JPEGBYTES"
+    return 200, JPEG
 
 
 def test_builds_a_manifest_entry_per_resolved_listing(tmp_path):
@@ -68,13 +81,13 @@ def test_downloads_the_hi_res_image_beside_the_manifest(tmp_path):
 
     def fetch(url):
         requested.append(url)
-        return 200, b"JPEGBYTES"
+        return 200, JPEG
 
     client = FakeClient({"v1|1|0": detail("v1|1|0", specifics())})
     build_corpus(client, lookup(), fetch, str(tmp_path), Manifest(), ["q"],
                  target=10, sleep=lambda s: None)
     assert requested == ["https://i.ebayimg.com/g/a/s-l1600.jpg"]
-    assert (tmp_path / image_relpath("v1|1|0")).read_bytes() == b"JPEGBYTES"
+    assert (tmp_path / image_relpath("v1|1|0")).read_bytes() == JPEG
 
 
 def test_a_failed_image_download_is_counted_and_produces_no_entry(tmp_path):
@@ -150,7 +163,7 @@ def test_the_manifest_is_saved_after_every_entry_so_an_interrupt_keeps_progress(
         calls["n"] += 1
         if calls["n"] == 3:
             raise KeyboardInterrupt
-        return 200, b"JPEGBYTES"
+        return 200, JPEG
 
     try:
         build_corpus(FakeClient(items), lookup(), flaky_fetch, str(tmp_path),
@@ -175,3 +188,40 @@ def test_a_listing_with_no_image_url_is_counted_not_crashed_on(tmp_path):
                           ["q"], target=10, sleep=lambda s: None)
     assert result.entries == []
     assert result.discards[IMAGE_FAILED] == 1
+
+
+def test_a_body_that_is_not_a_decodable_image_is_discarded_not_manifested(tmp_path):
+    # eBay can answer 200 with an HTML error page or a placeholder body.
+    # fetch_to_path only checks the bytes are non-empty, so such a body used
+    # to enter the manifest as a valid entry -- and then permanently jam the
+    # hand-crop tool, whose img.onload never fires on it.
+    html_body = b"<!doctype html><html><body>Sorry, this page is unavailable</body></html>"
+    client = FakeClient({"v1|1|0": detail("v1|1|0", specifics())})
+    result = build_corpus(client, lookup(), lambda url: (200, html_body), str(tmp_path),
+                          Manifest(), ["q"], target=10, sleep=lambda s: None)
+    assert result.entries == []
+    assert result.discards[IMAGE_FAILED] == 1
+    # The junk is removed, so a rerun refetches rather than treating the
+    # file on disk as an already-completed download.
+    assert not (tmp_path / image_relpath("v1|1|0")).exists()
+
+
+def test_an_undecodable_image_already_on_disk_is_discarded_on_rerun(tmp_path):
+    # The resume path skips the download when a non-empty file already
+    # exists; the decode check has to cover that path too.
+    path = tmp_path / image_relpath("v1|1|0")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"<html>not an image</html>")
+    client = FakeClient({"v1|1|0": detail("v1|1|0", specifics())})
+    result = build_corpus(client, lookup(), lambda url: (200, JPEG), str(tmp_path),
+                          Manifest(), ["q"], target=10, sleep=lambda s: None)
+    assert result.entries == []
+    assert result.discards[IMAGE_FAILED] == 1
+
+
+def test_a_decodable_image_is_kept(tmp_path):
+    client = FakeClient({"v1|1|0": detail("v1|1|0", specifics())})
+    result = build_corpus(client, lookup(), lambda url: (200, jpeg_bytes((40, 56), "blue")),
+                          str(tmp_path), Manifest(), ["q"], target=10, sleep=lambda s: None)
+    assert len(result.entries) == 1
+    assert result.discards == {}

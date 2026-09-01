@@ -148,3 +148,26 @@ def save_crops(crops: dict[str, Quad], path: str) -> None:
         json.dump(crops, fh, indent=2, sort_keys=True)
         fh.write("\n")
     os.replace(tmp, path)  # atomic — hours of hand-cropping live in here
+
+
+def load_skips(path: str) -> set[str]:
+    """item_ids the operator marked unusable. Missing file means none yet.
+
+    Kept in its own sidecar rather than in crops.json or manifest.json: a
+    skip is the absence of a quad, so writing a sentinel into crops.json
+    would force every consumer (eval/real.py, corpus/audit.py) to tell a
+    real quad from a placeholder, and manifest.json's schema is checked in.
+    """
+    if not os.path.exists(path):
+        return set()
+    with open(path) as fh:
+        return set(json.load(fh))
+
+
+def save_skips(skips: set[str], path: str) -> None:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = f"{path}.part"
+    with open(tmp, "w") as fh:
+        json.dump(sorted(skips), fh, indent=2)
+        fh.write("\n")
+    os.replace(tmp, path)  # atomic — same contract as the crops file

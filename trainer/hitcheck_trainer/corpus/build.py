@@ -23,6 +23,8 @@ import os
 import sys
 import time
 
+from PIL import Image, UnidentifiedImageError
+
 from ..catalog.db import open_db
 from ..catalog.http import httpx_fetch, httpx_post_form, httpx_transport
 from ..catalog.images import fetch_to_path
@@ -33,7 +35,10 @@ from .resolve import CardLookup, resolve
 DEFAULT_DB = "data/catalog.sqlite"
 DEFAULT_CORPUS = "data/corpus"
 
-# A discard reason build.py owns; resolve() cannot return it.
+# A discard reason build.py owns; resolve() cannot return it. It covers
+# every way an entry can fail to end up with a usable photograph on disk:
+# no image URL, a download that never succeeded, and a body that arrived
+# with status 200 but is not an image.
 IMAGE_FAILED = "IMAGE_FAILED"
 
 DEFAULT_QUERIES = (
@@ -43,6 +48,21 @@ DEFAULT_QUERIES = (
     "pokemon card bgs graded",
     "pokemon holo rare card",
 )
+
+
+def _is_decodable_image(path: str) -> bool:
+    """Whether the bytes at `path` actually decode as an image.
+
+    verify() reads the header and structure without decoding every pixel,
+    which is all that is needed to tell a photograph from an HTML error
+    page and cheap enough to run on every accepted listing.
+    """
+    try:
+        with Image.open(path) as image:
+            image.verify()
+    except (OSError, UnidentifiedImageError, ValueError):
+        return False
+    return True
 
 
 def build_corpus(client, lookup, fetch, corpus_dir, manifest, queries, target,
@@ -86,6 +106,16 @@ def build_corpus(client, lookup, fetch, corpus_dir, manifest, queries, target,
                 already = os.path.exists(path) and os.path.getsize(path) > 0
                 if not image_url or not (already or fetch_to_path(url=image_url, path=path,
                                                                   fetch=fetch, sleep=sleep)):
+                    discard(IMAGE_FAILED)
+                    continue
+                if not _is_decodable_image(path):
+                    # A 200 carrying an HTML error page or a placeholder body
+                    # is non-empty, so fetch_to_path accepts it. Left in the
+                    # manifest it jams the hand-crop tool permanently: the
+                    # browser's img.onload never fires, the canvas stays
+                    # unclickable, and /api/next returns the same entry
+                    # forever. Cheaper to catch here than to survive there.
+                    os.remove(path)  # so a rerun refetches instead of resuming it
                     discard(IMAGE_FAILED)
                     continue
 
