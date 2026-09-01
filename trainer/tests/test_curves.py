@@ -57,7 +57,7 @@ def test_a_non_monotone_curve_is_rejected_at_construction():
     # A descriptor that doubles back cannot be inverted: two parameters
     # map to one reading. Catching it here rather than silently returning
     # whichever branch the search happened to land on.
-    with pytest.raises(ValueError, match="not monotone"):
+    with pytest.raises(ValueError, match="not strictly increasing"):
         Curve(name="bad", parameter="strength",
               points=[(0.0, 0.0), (0.5, 0.20), (1.0, 0.10)])
 
@@ -65,6 +65,23 @@ def test_a_non_monotone_curve_is_rejected_at_construction():
 def test_a_curve_with_fewer_than_two_points_is_rejected():
     with pytest.raises(ValueError, match="at least two"):
         Curve(name="bad", parameter="strength", points=[(0.0, 0.0)])
+
+
+def test_a_curve_with_a_tied_descriptor_is_rejected_too():
+    # A FLAT segment is the same defect as a doubling-back one: two
+    # parameters, one reading. Non-strict monotonicity would wave this
+    # through and leave `interpolate` to pick a side of the tie in
+    # silence, which is the plausible-looking-wrong-answer failure this
+    # module exists to prevent.
+    with pytest.raises(ValueError, match="not strictly increasing"):
+        Curve(name="bad", parameter="strength",
+              points=[(0.0, 0.0), (0.5, 0.05), (1.0, 0.05)])
+
+
+def test_a_curve_with_a_repeated_parameter_is_rejected():
+    with pytest.raises(ValueError, match="not strictly ascending"):
+        Curve(name="bad", parameter="strength",
+              points=[(0.0, 0.0), (0.5, 0.05), (0.5, 0.10)])
 
 
 def test_bundle_round_trips_through_json(tmp_path):

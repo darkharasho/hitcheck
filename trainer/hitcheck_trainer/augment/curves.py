@@ -39,12 +39,21 @@ class Curve:
         if len(self.points) < 2:
             raise ValueError(f"curve {self.name!r} needs at least two points")
         values = [p for p, _ in self.points]
-        if values != sorted(values):
-            raise ValueError(f"curve {self.name!r} parameters are not sorted ascending")
-        descriptors = self.descriptors()
-        if descriptors != sorted(descriptors):
+        if any(b <= a for a, b in itertools.pairwise(values)):
             raise ValueError(
-                f"curve {self.name!r} descriptor is not monotone increasing: "
+                f"curve {self.name!r} parameters are not strictly ascending: {values}"
+            )
+        descriptors = self.descriptors()
+        # STRICTLY increasing, not merely non-decreasing. A tie means two
+        # parameters produce one descriptor reading -- exactly the
+        # "cannot be inverted" case this check exists for -- and
+        # `sorted()` comparison would wave it through, leaving
+        # `interpolate` to silently pick one side of the tie. On a real
+        # sweep a tie means the two settings are indistinguishable, which
+        # has to fail loudly rather than resolve to a coin flip.
+        if any(b <= a for a, b in itertools.pairwise(descriptors)):
+            raise ValueError(
+                f"curve {self.name!r} descriptor is not strictly increasing: "
                 f"{descriptors} -- two parameters map to one reading, so it "
                 "cannot be inverted. Re-run the sweep with more samples."
             )
@@ -78,8 +87,8 @@ def interpolate(curve: Curve, descriptor: float) -> tuple[float, bool]:
         return (float(points[-1][0]), True)
     for (v0, d0), (v1, d1) in itertools.pairwise(points):
         if d0 <= descriptor <= d1:
-            if d1 == d0:
-                return (float(v0), False)
+            # d1 > d0 is guaranteed by Curve.__post_init__'s strict check,
+            # so this division cannot be by zero.
             span = (descriptor - d0) / (d1 - d0)
             return (float(v0 + span * (v1 - v0)), False)
     raise AssertionError(f"descriptor {descriptor} fell through curve {curve.name!r}")
