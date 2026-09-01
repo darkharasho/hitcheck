@@ -1,4 +1,5 @@
 import io
+import json
 
 import numpy as np
 import pytest
@@ -7,9 +8,11 @@ from PIL import Image
 from hitcheck_trainer.augment.measure import (
     AxisEstimate,
     DegradationProfile,
+    axis_medians,
     estimate_jpeg,
     jpeg_quality,
 )
+from hitcheck_trainer.augment.measure import main as measure_main
 
 
 def card_like(size=(240, 336), seed=7):
@@ -456,3 +459,92 @@ def test_profile_image_reports_perspective_unavailable_without_a_quad():
     profile = profile_image(image, quad=None, source=None, bundle=bundle)
     assert profile.perspective.strength is None
     assert "perspective=unavailable" in profile.summary()
+
+
+def test_axis_medians_reports_count_and_saturation_beside_the_median():
+    profiles = [
+        DegradationProfile(
+            jpeg=AxisEstimate(0.2), blur=AxisEstimate(0.1),
+            perspective=AxisEstimate(None), glare=AxisEstimate(0.4),
+        ),
+        DegradationProfile(
+            jpeg=AxisEstimate(0.6), blur=AxisEstimate(0.3),
+            perspective=AxisEstimate(None), glare=AxisEstimate(1.0, saturated=True),
+        ),
+    ]
+    medians = axis_medians(profiles)
+    assert medians["jpeg"] == (pytest.approx(0.4), 2, 0)
+    assert medians["blur"] == (pytest.approx(0.2), 2, 0)
+    # Saturated entries are counted, never averaged: their true value is
+    # unknown and folding them in as 1.0 would drag the median to the clamp.
+    assert medians["glare"] == (pytest.approx(0.4), 1, 1)
+    # Unmeasured is not zero.
+    assert medians["perspective"] == (None, 0, 0)
+
+
+def test_axis_medians_handles_an_axis_with_nothing_measured():
+    profiles = [
+        DegradationProfile(
+            jpeg=AxisEstimate(None), blur=AxisEstimate(0.1),
+            perspective=AxisEstimate(None), glare=AxisEstimate(None),
+        )
+    ]
+    assert axis_medians(profiles)["jpeg"] == (None, 0, 0)
+
+
+def test_main_refuses_an_empty_corpus_instead_of_printing_zeros(tmp_path, capsys):
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "manifest.json").write_text(
+        json.dumps({"entries": [], "discards": {}, "queries": []})
+    )
+    (corpus / "crops.json").write_text("{}")
+    assert measure_main(["--corpus", str(corpus)]) == 1
+    assert "no cropped corpus entries" in capsys.readouterr().out.lower()
+
+
+def test_main_profiles_a_cropped_corpus_and_labels_the_stated_limit(tmp_path, capsys):
+    corpus = tmp_path / "corpus"
+    (corpus / "images").mkdir(parents=True)
+    photo = card_like(size=(480, 640))
+    photo.save(corpus / "images" / "v1_1_0.jpg", quality=40)
+    (corpus / "manifest.json").write_text(json.dumps({
+        "entries": [{
+            "item_id": "v1|1|0", "card_id": "base1-4",
+            "image": "images/v1_1_0.jpg", "image_url": "u",
+            "listing_url": "l", "aspects": {},
+        }],
+        "discards": {}, "queries": [],
+    }))
+    (corpus / "crops.json").write_text(json.dumps({
+        "v1|1|0": [[40.0, 60.0], [430.0, 55.0], [438.0, 580.0], [46.0, 590.0]]
+    }))
+
+    assert measure_main(["--corpus", str(corpus)]) == 0
+    out = capsys.readouterr().out
+    for axis in ("jpeg", "blur", "perspective", "glare"):
+        assert axis in out
+    # The two labels the spec requires on every quoted number.
+    assert "degrade.py" in out
+    assert "not a physical measurement" in out.lower()
+
+
+def test_main_skips_entries_the_crop_tool_marked_unusable(tmp_path, capsys):
+    corpus = tmp_path / "corpus"
+    (corpus / "images").mkdir(parents=True)
+    card_like(size=(480, 640)).save(corpus / "images" / "v1_1_0.jpg", quality=40)
+    (corpus / "manifest.json").write_text(json.dumps({
+        "entries": [{
+            "item_id": "v1|1|0", "card_id": "base1-4",
+            "image": "images/v1_1_0.jpg", "image_url": "u",
+            "listing_url": "l", "aspects": {},
+        }],
+        "discards": {}, "queries": [],
+    }))
+    (corpus / "crops.json").write_text(json.dumps({
+        "v1|1|0": [[40.0, 60.0], [430.0, 55.0], [438.0, 580.0], [46.0, 590.0]]
+    }))
+    (corpus / "skipped.json").write_text(json.dumps(["v1|1|0"]))
+
+    assert measure_main(["--corpus", str(corpus)]) == 1
+    assert "no cropped corpus entries" in capsys.readouterr().out.lower()

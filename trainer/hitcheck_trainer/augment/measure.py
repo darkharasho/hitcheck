@@ -15,12 +15,18 @@ the number needed to read the M2 curve, and it must be labelled that way
 so it is not later mistaken for a physical measurement.
 """
 
+import argparse
 import functools
 import io
+import os
+import statistics
+import sys
 from dataclasses import dataclass
 
 from PIL import Image
 
+from ..corpus.crops import apply_quad, load_crops, load_skips
+from ..corpus.manifest import load_manifest
 from .curves import Curve, CurveBundle, interpolate, load_bundle, nearest
 from .descriptors import blockiness, bright_tail_mass, quad_corner_deviation, reblur_ratio
 
@@ -298,3 +304,93 @@ def profile_image(
         perspective=perspective,
         glare=estimate_glare(image, curves["glare"]),
     )
+
+
+DEFAULT_CORPUS = "data/corpus"
+
+AXES = ("jpeg", "blur", "perspective", "glare")
+
+
+def axis_medians(profiles: list[DegradationProfile]) -> dict[str, tuple]:
+    """Per axis: (median strength, how many were measured, how many saturated).
+
+    Median rather than mean: glare and perspective are noisy per image
+    with occasional large outliers, and a mean would chase them.
+
+    Saturated estimates are COUNTED but excluded from the median. Their
+    true value is unknown and at least the clamp; folding them in as 1.0
+    would pull the median toward the clamp and make a corpus with a few
+    blown highlights look uniformly glared. Unmeasured axes report None,
+    which is a different claim from a measured 0.0.
+    """
+    summary = {}
+    for axis in AXES:
+        estimates = [getattr(p, axis) for p in profiles]
+        usable = [e.strength for e in estimates if e.strength is not None and not e.saturated]
+        saturated = sum(1 for e in estimates if e.strength is not None and e.saturated)
+        median = statistics.median(usable) if usable else None
+        summary[axis] = (median, len(usable), saturated)
+    return summary
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(prog="hitcheck-measure-corpus")
+    parser.add_argument("--corpus", default=DEFAULT_CORPUS)
+    parser.add_argument("--curves", default=None,
+                        help="calibration bundle (default: the checked-in curves.json)")
+    args = parser.parse_args(argv)
+
+    manifest = load_manifest(os.path.join(args.corpus, "manifest.json"))
+    crops = load_crops(os.path.join(args.corpus, "crops.json"))
+    skips = load_skips(os.path.join(args.corpus, "skipped.json"))
+    bundle = load_bundle(args.curves) if args.curves else load_bundle()
+
+    profiles, failed = [], 0
+    for entry in manifest.entries:
+        quad = crops.get(entry.item_id)
+        if quad is None or entry.item_id in skips:
+            continue
+        path = os.path.join(args.corpus, entry.image)
+        if not (os.path.exists(path) and os.path.getsize(path) > 0):
+            continue
+        try:
+            with Image.open(path) as source:
+                # `source` keeps its quantization table for the JPEG axis;
+                # the crop is what gets embedded, so blur and glare come
+                # from there; the quad is in the ORIGINAL's coordinates,
+                # which unwarping is exactly what destroys.
+                crop = apply_quad(source, quad)
+                profiles.append(profile_image(crop, quad=quad, source=source, bundle=bundle))
+        except (OSError, ValueError):
+            failed += 1
+
+    print(f"corpus: {len(manifest.entries)} entries, {len(crops)} cropped, "
+          f"{len(skips)} skipped, {len(profiles)} profiled, {failed} unreadable")
+    if not profiles:
+        print("No cropped corpus entries. Run the corpus build, then the crop tool "
+              "(docs/runbooks/2026-08-31-m2-corpus.md).")
+        return 1
+
+    print()
+    print("Median degradation-equivalent per axis:")
+    for axis, (median, measured, saturated) in axis_medians(profiles).items():
+        value = "unavailable" if median is None else f"{median:.3f}"
+        note = f" ({saturated} saturated, excluded)" if saturated else ""
+        print(f"  {axis:12s} {value:>12s}  n={measured}{note}")
+
+    print()
+    print("These are degrade.py's own parameters, not physical measurements: "
+          "'blur 0.35' means 'as blurry as motion_blur at 0.35', and is not a "
+          "physical measurement of the lens or the codec.")
+    print("Perspective is a per-image sample of a uniform draw "
+          "(degrade.py:71), so only the corpus median is meaningful; individual "
+          "values are noisy. Blur is per-image noisy too -- reblur_ratio responds "
+          "to the blur ANGLE as well as its size -- and it under-reports blur above "
+          "roughly 0.4 as the descriptor saturates.")
+    print("Measured on seller photographs, which are well-lit, static and "
+          "high-resolution. A stream frame sits further along every axis.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
