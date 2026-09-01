@@ -105,3 +105,40 @@ def test_load_bundle_names_the_missing_file_rather_than_failing_open(tmp_path):
     # answer, which is the worst kind.
     with pytest.raises(FileNotFoundError, match="calibrate"):
         load_bundle(str(tmp_path / "absent.json"))
+
+
+from hitcheck_trainer.augment.curves import DEFAULT_CURVES_PATH
+
+
+def test_the_committed_bundle_loads_and_has_every_axis_measure_needs():
+    bundle = load_bundle(DEFAULT_CURVES_PATH)
+    assert set(bundle.curves) == {"perspective", "blur", "glare", "jpeg_blockiness"}
+    assert bundle.generated_by == "hitcheck_trainer.augment.calibrate"
+    assert bundle.sample_images >= 20
+    assert bundle.seeds >= 8
+
+
+def test_the_committed_strength_curves_reach_the_saturation_point():
+    # curves.interpolate reports saturation at the LAST point, so a curve
+    # that stopped at 0.8 would report ">= 0.8" for a fully-clamped image
+    # and understate it.
+    bundle = load_bundle(DEFAULT_CURVES_PATH)
+    for name in ("perspective", "glare", "jpeg_blockiness"):
+        values = [v for v, _ in bundle.curves[name].points]
+        assert values[0] == pytest.approx(0.0)
+        assert values[-1] == pytest.approx(1.0)
+
+
+def test_the_committed_blur_curve_covers_every_reachable_kernel():
+    bundle = load_bundle(DEFAULT_CURVES_PATH)
+    kernels = [int(v) for v, _ in bundle.curves["blur"].points]
+    assert kernels == [1, 3, 5, 7, 9, 11, 13, 15]
+
+
+def test_the_committed_curves_actually_separate_their_endpoints():
+    # Monotone is necessary but not sufficient: a curve whose descriptor
+    # barely moves across the whole range inverts every reading to noise.
+    bundle = load_bundle(DEFAULT_CURVES_PATH)
+    for name, curve in bundle.curves.items():
+        low, high = curve.descriptors()[0], curve.descriptors()[-1]
+        assert high > low * 1.2 + 1e-6, f"curve {name} is nearly flat: {low} -> {high}"
