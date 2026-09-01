@@ -208,3 +208,70 @@ def test_main_prints_no_crop_and_missing_image_skip_counts_directly(tmp_path, mo
     # correspond to any manifest entry and must not be counted at all.
     assert "no_crop=1" in out
     assert "missing_image=1" in out
+
+
+def _explode(*args, **kwargs):
+    raise AssertionError("the gallery must not be rebuilt when --reuse-index is passed")
+
+
+def test_main_errors_rather_than_rebuilding_when_the_reused_index_is_missing(
+    tmp_path, monkeypatch, capsys
+):
+    # Failing open here re-embeds 20k gallery images AND overwrites the 66MB
+    # data/index/cards.bin, then measures against a DIFFERENT gallery than the
+    # synthetic run -- destroying the same-gallery premise the comparison rests on.
+    monkeypatch.setattr(real, "Embedder", _explode)
+    monkeypatch.setattr(real, "build_index", _explode)
+    monkeypatch.setattr(real, "open_db", _explode)
+
+    _write_corpus_on_disk(tmp_path, ["a"])
+    missing = str(tmp_path / "typo" / "cards.bin")
+
+    exit_code = main(["--corpus", str(tmp_path), "--reuse-index", "--index", missing])
+
+    assert exit_code != 0
+    out = capsys.readouterr().out
+    assert missing in out  # names the path so a typo is obvious
+
+
+def test_main_errors_when_only_the_index_sidecar_is_missing(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(real, "Embedder", _explode)
+    monkeypatch.setattr(real, "build_index", _explode)
+    monkeypatch.setattr(real, "open_db", _explode)
+
+    _write_corpus_on_disk(tmp_path, ["a"])
+    index_path = tmp_path / "index.bin"
+    index_path.write_bytes(b"fake")  # sidecar deliberately absent
+
+    exit_code = main(["--corpus", str(tmp_path), "--reuse-index", "--index", str(index_path)])
+
+    assert exit_code != 0
+    assert f"{index_path}.ids.json" in capsys.readouterr().out
+
+
+def test_main_still_rebuilds_the_gallery_when_reuse_index_is_not_passed(
+    tmp_path, monkeypatch, capsys
+):
+    # The new guard must not change behaviour when the flag is absent.
+    built = {}
+
+    class Embedder(FakeEmbedder):
+        device = "cpu"  # printed by the rebuild branch
+
+    monkeypatch.setattr(real, "Embedder", Embedder)
+    monkeypatch.setattr(real, "open_db", lambda path: None)
+    monkeypatch.setattr(real, "all_card_images", lambda conn: [])
+    monkeypatch.setattr(real, "available_ids", lambda pairs, root: ["card-a"])
+    monkeypatch.setattr(real, "image_path", lambda root, card_id: str(tmp_path / "a.jpg"))
+    monkeypatch.setattr(real, "embed_in_chunks",
+                        lambda embedder, items, chunk=256, transform=None: (["card-a"], [[1.0]]))
+    monkeypatch.setattr(real, "build_index",
+                        lambda gallery, ids, path: built.update(path=path))
+    monkeypatch.setattr(real.CardIndex, "load", staticmethod(
+        lambda path, dim: FakeIndex([("card-a", 0.1)])
+    ))
+
+    _write_corpus_on_disk(tmp_path, ["a"])
+    main(["--corpus", str(tmp_path), "--index", str(tmp_path / "nowhere" / "cards.bin")])
+
+    assert built["path"] == str(tmp_path / "nowhere" / "cards.bin")

@@ -101,6 +101,22 @@ def main(argv=None) -> int:
                         help="entries hand-audited")
     args = parser.parse_args(argv)
 
+    sidecar_path = f"{args.index}.ids.json"
+    if args.reuse_index:
+        # Failing open here is expensive twice over: it re-embeds the whole
+        # gallery and OVERWRITES the prebuilt index at --index, and it then
+        # measures against a different gallery than the synthetic run, which
+        # is the one thing the two numbers' comparability depends on. A typo
+        # in --index must stop the run, not silently rebuild.
+        missing = [p for p in (args.index, sidecar_path) if not os.path.exists(p)]
+        if missing:
+            print("--reuse-index was passed but " + " and ".join(missing) + " is missing. "
+                  "Refusing to rebuild the gallery: that would overwrite the index at "
+                  f"{args.index} and measure against a different gallery than the "
+                  "synthetic run. Fix the path, or drop --reuse-index to rebuild "
+                  "deliberately.")
+            return 1
+
     manifest = load_manifest(os.path.join(args.corpus, "manifest.json"))
     crops = load_crops(os.path.join(args.corpus, "crops.json"))
     skipped = {}
@@ -115,8 +131,7 @@ def main(argv=None) -> int:
         return 1
 
     embedder = Embedder()
-    sidecar_path = f"{args.index}.ids.json"
-    if args.reuse_index and os.path.exists(args.index) and os.path.exists(sidecar_path):
+    if args.reuse_index:
         print(f"reusing existing gallery index at {args.index}")
         index = CardIndex.load(args.index, dim=embedder.dim)
     else:
