@@ -4,6 +4,7 @@ from PIL import Image, ImageDraw
 
 from hitcheck_trainer.corpus.crops import (
     CARD_SIZE,
+    MIN_QUAD_AREA,
     apply_quad,
     load_crops,
     quad_area,
@@ -44,6 +45,24 @@ def test_validate_rejects_a_degenerate_quad():
 
 def test_validate_accepts_a_real_sized_quad():
     validate_quad([[50, 60], [300, 40], [330, 300], [80, 330]])
+
+
+def test_validate_rejects_a_self_intersecting_bow_tie_quad():
+    # A mis-clicked pair of adjacent corners produces a bow-tie shape whose
+    # shoelace area is comfortably above MIN_QUAD_AREA -- proving this test
+    # exercises the self-intersection gate, not the area gate.
+    quad = [[0, 0], [300, 300], [350, 0], [0, 280]]
+    assert quad_area(quad) > MIN_QUAD_AREA
+    with pytest.raises(ValueError):
+        validate_quad(quad)
+
+
+@pytest.mark.parametrize("winding", ["clockwise", "counterclockwise"])
+def test_validate_accepts_a_normal_convex_quad_in_either_winding(winding):
+    quad = [[50, 60], [300, 40], [330, 300], [80, 330]]
+    if winding == "counterclockwise":
+        quad = list(reversed(quad))
+    validate_quad(quad)
 
 
 def test_apply_quad_unwarps_an_angled_card_to_a_full_frame():

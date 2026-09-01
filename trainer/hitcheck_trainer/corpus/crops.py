@@ -41,6 +41,20 @@ def quad_area(quad: Quad) -> float:
     return float(abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))) / 2.0)
 
 
+def _orientation(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
+    """Sign of the cross product (b - a) x (c - a): which way c turns off a->b."""
+    return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+
+def _segments_properly_cross(a: np.ndarray, b: np.ndarray, c: np.ndarray, d: np.ndarray) -> bool:
+    """Whether open segments a-b and c-d cross at an interior point of both."""
+    d1 = _orientation(c, d, a)
+    d2 = _orientation(c, d, b)
+    d3 = _orientation(a, b, c)
+    d4 = _orientation(a, b, d)
+    return ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0)) and d1 != 0 and d2 != 0
+
+
 def validate_quad(quad: Quad) -> None:
     points = np.asarray(quad, dtype=np.float64)
     if points.shape != (4, 2):
@@ -48,6 +62,14 @@ def validate_quad(quad: Quad) -> None:
     area = quad_area(points)
     if area < MIN_QUAD_AREA:
         raise ValueError(f"quad area {area:.1f} is below {MIN_QUAD_AREA} — degenerate")
+    # A quad recorded in click order (walking its boundary) is simple, not
+    # self-intersecting, exactly when its two diagonals cross. A bow-tie
+    # misclick swaps two adjacent corners, which keeps the shoelace area
+    # comfortably above MIN_QUAD_AREA but makes the diagonals miss each
+    # other entirely -- this is a distinct failure from a small/degenerate
+    # quad and needs its own check.
+    if not _segments_properly_cross(points[0], points[2], points[1], points[3]):
+        raise ValueError(f"quad {quad} is self-intersecting (bow-tie) — check click order")
 
 
 def perspective_coeffs(size: tuple[int, int], quad: Quad) -> tuple[float, ...]:
