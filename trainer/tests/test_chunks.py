@@ -120,6 +120,30 @@ def test_the_transform_index_still_points_at_the_right_item_after_a_skip(tmp_pat
     assert seen == [0, 2, 3]  # not [0, 1, 2]
 
 
+def test_the_transform_index_survives_a_chunk_boundary_after_an_earlier_skip(tmp_path):
+    # Every other skip test keeps the skip and its survivors inside a single
+    # chunk (<=4 items, chunk=2 or 4), so offset arithmetic that is correct in
+    # chunk 0 but off by `chunk` in chunk 1 would still pass all of them. This
+    # spans three chunks -- the skip lands in chunk 0, and chunks 1 and 2 hold
+    # further readable items -- so a boundary-crossing offset bug shows up.
+    items = written(tmp_path, ["a"])
+    bad = tmp_path / "bad.png"
+    bad.write_bytes(b"junk")
+    items.append(("bad", str(bad)))
+    items += written(tmp_path, ["c", "d", "e"])
+
+    seen = []
+
+    def transform(image, index):
+        seen.append(index)
+        return image
+
+    labels, vectors = embed_in_chunks(FakeEmbedder(), items, chunk=2, transform=transform)
+    assert labels == ["a", "c", "d", "e"]
+    assert len(vectors) == len(labels)
+    assert seen == [0, 2, 3, 4]  # not [0, 1, 2, 3]
+
+
 def test_no_items_returns_an_empty_array_of_the_right_width(tmp_path):
     labels, vectors = embed_in_chunks(FakeEmbedder(), [])
     assert labels == []
