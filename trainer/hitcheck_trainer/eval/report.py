@@ -4,10 +4,51 @@ This module produces the number that decides whether an identification
 model gets trained at all. Kept pure so the decision is reproducible.
 """
 
+import math
 from dataclasses import dataclass, field
 
 SKIP_TRAINING = "SKIP_TRAINING"
 TRAIN_REQUIRED = "TRAIN_REQUIRED"
+INCONCLUSIVE = "INCONCLUSIVE"
+
+# 95% two-sided normal quantile.
+_Z95 = 1.959963984540054
+
+
+def wilson_interval(hits: int, total: int, z: float = _Z95) -> tuple[float, float]:
+    """Wilson score interval for a binomial proportion.
+
+    Wilson rather than the textbook normal approximation because the
+    quantity being bounded sits near 0.9 with a few hundred samples,
+    where the normal approximation's interval runs off the end of [0, 1]
+    and is measurably too narrow. Wilson stays inside the unit range by
+    construction and is well behaved at 0 and 1 hits.
+
+    An empty sample returns the full unit range: no data is ignorance,
+    not a point estimate of zero.
+    """
+    if total <= 0:
+        return (0.0, 1.0)
+    p = hits / total
+    denominator = 1 + z * z / total
+    center = (p + z * z / (2 * total)) / denominator
+    half_width = (z / denominator) * math.sqrt(
+        p * (1 - p) / total + z * z / (4 * total * total)
+    )
+    return (max(0.0, center - half_width), min(1.0, center + half_width))
+
+
+def label_noise_bound(errors: int, sample: int) -> float:
+    """Upper 95% bound on the label error rate, from a hand-audited sample.
+
+    Reported alongside accuracy because a mis-resolved label surfaces as a
+    retrieval miss that is not one. The bound, not the observed rate, is
+    what gets attached to the verdict: zero errors in 50 audited entries
+    does not establish zero errors in 500.
+    """
+    if sample <= 0:
+        return 1.0
+    return wilson_interval(errors, sample)[1]
 
 
 @dataclass
@@ -28,19 +69,35 @@ class AccuracyReport:
     """
     failures: list[tuple[str, str]] = field(default_factory=list)
 
-    def verdict(self, threshold: float = 0.90) -> str:
-        """Above-or-at threshold, zero-shot retrieval is good enough to ship.
+    @property
+    def interval(self) -> tuple[float, float]:
+        """95% Wilson interval on `top1`."""
+        return wilson_interval(round(self.top1 * self.total), self.total)
 
-        The boundary is inclusive (`>=`): a run landing exactly on the
-        threshold (e.g. top1 == 0.90 against threshold=0.90) must return
-        SKIP_TRAINING, not TRAIN_REQUIRED. This is deliberate and covered
-        by test_verdict_boundary_exact_threshold_is_skip_training.
+    def verdict(self, threshold: float = 0.90) -> str:
+        """Decide on the interval, never on the point estimate alone.
+
+        Returns INCONCLUSIVE when the 95% interval straddles `threshold` —
+        the sample cannot resolve which side of the bar it is on. This is
+        deliberately a third outcome rather than a rounding rule: a verdict
+        flipped by sampling noise is worse than no verdict, because it
+        would be acted on. INCONCLUSIVE means collect more corpus.
+
+        At N=500 the decisive bands are top1 >= 0.928 and top1 <= 0.872;
+        at N=2000, 0.9135 and 0.8865.
         """
-        return SKIP_TRAINING if self.top1 >= threshold else TRAIN_REQUIRED
+        low, high = self.interval
+        if low >= threshold:
+            return SKIP_TRAINING
+        if high < threshold:
+            return TRAIN_REQUIRED
+        return INCONCLUSIVE
 
     def summary(self) -> str:
+        low, high = self.interval
         return (
-            f"queries={self.total} top1={self.top1:.3f} top5={self.top5:.3f} "
+            f"queries={self.total} top1={self.top1:.3f} "
+            f"ci95=[{low:.3f}, {high:.3f}] top5={self.top5:.3f} "
             f"mean_top1_distance={self.mean_top1_distance:.4f} verdict={self.verdict()}"
         )
 

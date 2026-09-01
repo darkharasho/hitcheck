@@ -22,6 +22,36 @@ from .backoff import backoff_delays
 RETRYABLE = {0, 429, 500, 502, 503, 504}
 
 
+def fetch_to_path(url, path, fetch, sleep=time.sleep, max_attempts=4) -> bool:
+    """Download one URL to one path, retrying, landing it atomically.
+
+    Returns True once the bytes are at `path`. Writes go to a `.part`
+    temp file and arrive via `os.replace`, so a process killed mid-write
+    can never leave a half-written file at the final path. An empty body
+    counts as a failure: a zero-byte file at the final path would be
+    mistaken for a completed download by any later resume check.
+
+    Shared by the catalog sync and the M2 corpus builder. They key files
+    differently — card id versus eBay itemId — but the retry schedule and
+    the atomic write must not diverge between them.
+    """
+    delays = backoff_delays(max_attempts - 1)
+    for attempt in range(max_attempts):
+        status, body = fetch(url)
+        if status == 200 and body:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            tmp = f"{path}.part"
+            with open(tmp, "wb") as fh:
+                fh.write(body)
+            os.replace(tmp, path)  # atomic — no half-written images
+            return True
+        if status not in RETRYABLE:
+            return False
+        if attempt < len(delays):
+            sleep(delays[attempt])
+    return False
+
+
 def image_path(root: str, card_id: str) -> str:
     shard = card_id.rsplit("-", 1)[0] if "-" in card_id else "_"
     return os.path.join(root, shard, f"{card_id}.png")
@@ -36,7 +66,6 @@ def download_images(pairs, root, fetch, sleep=time.sleep, max_attempts=4, on_pro
     downloaded = 0
     skipped = 0
     total = len(pairs)
-    delays = backoff_delays(max_attempts - 1)
 
     for i, (card_id, url) in enumerate(pairs, start=1):
         path = image_path(root, card_id)
@@ -46,20 +75,8 @@ def download_images(pairs, root, fetch, sleep=time.sleep, max_attempts=4, on_pro
                 on_progress(i, total)
             continue
 
-        for attempt in range(max_attempts):
-            status, body = fetch(url)
-            if status == 200 and body:
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                tmp = f"{path}.part"
-                with open(tmp, "wb") as fh:
-                    fh.write(body)
-                os.replace(tmp, path)  # atomic — no half-written images
-                downloaded += 1
-                break
-            if status not in RETRYABLE:
-                break
-            if attempt < len(delays):
-                sleep(delays[attempt])
+        if fetch_to_path(url, path, fetch, sleep=sleep, max_attempts=max_attempts):
+            downloaded += 1
 
         if on_progress:
             on_progress(i, total)

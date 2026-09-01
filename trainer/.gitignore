@@ -2,6 +2,10 @@
 __pycache__/
 *.pyc
 .env
-data/
+data/*
+!data/corpus/
+data/corpus/*
+!data/corpus/manifest.json
+!data/corpus/crops.json
 .pytest_cache/
 .ruff_cache/
