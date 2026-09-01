@@ -12,15 +12,13 @@ import json
 import os
 import sys
 
-import numpy as np
-from PIL import Image
-
 from ..augment.degrade import degrade
 from ..catalog.db import all_card_images, open_db
 from ..catalog.images import image_path
 from ..index.build import build_index
 from ..index.embed import Embedder
 from ..index.query import CardIndex
+from .chunks import embed_in_chunks
 from .report import score
 
 DEFAULT_DB = "data/catalog.sqlite"
@@ -38,41 +36,6 @@ def available_ids(pairs, images_root):
         for card_id, _ in pairs
         if os.path.exists(image_path(images_root, card_id))
     ]
-
-
-def load_chunk(card_ids, images_root):
-    """Decode one chunk of images. Returns (ids, images) for those that opened."""
-    ids, images = [], []
-    for card_id in card_ids:
-        try:
-            with Image.open(image_path(images_root, card_id)) as img:
-                images.append(img.convert("RGB").copy())
-            ids.append(card_id)
-        except OSError:
-            continue  # truncated file; a catalog rerun replaces it
-    return ids, images
-
-
-def embed_in_chunks(embedder, card_ids, images_root, chunk=256, transform=None):
-    """Embed images a chunk at a time, holding only `chunk` decoded at once.
-
-    NEVER materialise the whole catalog. 20,427 images at 240x330 RGB is
-    4.52GB of decoded pixels before PIL overhead, degraded copies and torch
-    tensors — that allocation contributed to a global OOM on a 30GB machine
-    that also runs games and browsers. Chunked at 256 the resident set is
-    ~58MB. `transform` optionally degrades each image before embedding.
-    """
-    kept_ids, vectors = [], []
-    for start in range(0, len(card_ids), chunk):
-        ids, images = load_chunk(card_ids[start : start + chunk], images_root)
-        if not ids:
-            continue
-        if transform is not None:
-            images = [transform(img, i) for i, img in enumerate(images, start)]
-        vectors.append(embedder.embed(images, batch_size=64))
-        kept_ids.extend(ids)
-        del images  # drop decoded pixels before the next chunk
-    return kept_ids, np.concatenate(vectors, axis=0) if vectors else np.zeros((0, embedder.dim), dtype=np.float32)
 
 
 def main(argv=None) -> int:
@@ -110,7 +73,8 @@ def main(argv=None) -> int:
             ids = json.load(fh)["ids"]
     else:
         print(f"embedding gallery on {embedder.device} (dim {embedder.dim})...")
-        ids, gallery = embed_in_chunks(embedder, disk_ids, args.images, chunk=args.chunk)
+        gallery_items = [(card_id, image_path(args.images, card_id)) for card_id in disk_ids]
+        ids, gallery = embed_in_chunks(embedder, gallery_items, chunk=args.chunk)
         build_index(gallery, ids, args.index)
         index = CardIndex.load(args.index, dim=embedder.dim)
         del gallery
@@ -119,10 +83,10 @@ def main(argv=None) -> int:
     query_ids = ids[::step][: args.sample]
 
     print(f"degrading and embedding {len(query_ids)} queries (strength {args.strength})...")
+    query_items = [(card_id, image_path(args.images, card_id)) for card_id in query_ids]
     query_ids, query_vectors = embed_in_chunks(
         embedder,
-        query_ids,
-        args.images,
+        query_items,
         chunk=args.chunk,
         transform=lambda img, i: degrade(img, seed=i, strength=args.strength),
     )
