@@ -21,8 +21,8 @@ from dataclasses import dataclass
 
 from PIL import Image
 
-from .curves import Curve, interpolate, nearest
-from .descriptors import quad_corner_deviation, reblur_ratio
+from .curves import Curve, CurveBundle, interpolate, load_bundle, nearest
+from .descriptors import blockiness, bright_tail_mass, quad_corner_deviation, reblur_ratio
 
 # degrade.jpeg_artifacts: quality = int(max(8, 60 - 45 * min(strength, 1.0)))
 # so strength 0 -> 60 and strength 1 -> 15. The max(8, ...) floor is
@@ -212,3 +212,82 @@ def estimate_perspective(quad: list[list[float]], curve: Curve) -> AxisEstimate:
     """
     strength, saturated = interpolate(curve, quad_corner_deviation(quad))
     return AxisEstimate(strength, saturated=saturated)
+
+
+def estimate_glare(image: Image.Image, curve: Curve) -> AxisEstimate:
+    """Specular-glare strength-equivalent from the bright tail of the histogram.
+
+    Saturates: `add_glare` fills with `int(190 * min(strength, 1.0))`, so
+    strength 1.0 and strength 2.5 produce identical pixels and anything at
+    the top of the curve reports ">= 1.0" rather than a point value.
+
+    Noisy per image on two counts -- the ellipse's centre and radii are
+    random draws, and the descriptor carries a content term (a card shot
+    on a white desk starts with tail mass a card on black does not). Read
+    it as a corpus median, not a per-image measurement.
+    """
+    strength, saturated = interpolate(curve, bright_tail_mass(image))
+    return AxisEstimate(strength, saturated=saturated)
+
+
+def estimate_jpeg_blockiness(image: Image.Image, curve: Curve) -> AxisEstimate:
+    """JPEG strength-equivalent for inputs with no quantization table.
+
+    Stream frames arrive as decoded H.264: the compression is real but the
+    header is gone, so it has to be measured off the 8x8 grid instead.
+    Strictly worse than `estimate_jpeg` -- calibrated rather than exact,
+    and confounded by any blur applied after compression, which smooths
+    the very block edges this counts. Use it only when the header is
+    genuinely absent.
+
+    Saturates for the same reason `estimate_jpeg` does: quality bottoms
+    out at 15 and the descriptor goes flat past strength 1.0.
+    """
+    strength, saturated = interpolate(curve, blockiness(image))
+    return AxisEstimate(strength, saturated=saturated)
+
+
+def profile_image(
+    image: Image.Image,
+    quad: list[list[float]] | None = None,
+    source: Image.Image | None = None,
+    bundle: CurveBundle | None = None,
+) -> DegradationProfile:
+    """Locate one image on all four axes.
+
+    The three inputs are not interchangeable, because the axes are not
+    measured off the same pixels:
+
+    `image` is the CARD CROP -- what actually gets embedded. Blur and
+    glare come from here; a blurry desk behind a sharp card is not a
+    degradation of the card.
+
+    `source` is the ORIGINAL FILE as opened, header intact and NOT
+    `.convert()`ed (which drops `quantization`). The JPEG axis is read
+    exactly from it. Without it, or without a table in it, the axis falls
+    back to blockiness measured on `image`.
+
+    `quad` is the card's corners IN THE ORIGINAL PHOTOGRAPH'S
+    COORDINATES. Unwarping the crop is exactly what destroys this
+    evidence, so it cannot be recovered from `image`. Absent, the
+    perspective axis reports unavailable rather than 0.0 -- "we did not
+    measure it" and "we measured no warp" are different claims.
+    """
+    curves = (bundle or load_bundle()).curves
+
+    jpeg = estimate_jpeg(source) if source is not None else AxisEstimate(None)
+    if jpeg.strength is None:
+        jpeg = estimate_jpeg_blockiness(image, curves["jpeg_blockiness"])
+
+    perspective = (
+        estimate_perspective(quad, curves["perspective"])
+        if quad is not None
+        else AxisEstimate(None)
+    )
+
+    return DegradationProfile(
+        jpeg=jpeg,
+        blur=estimate_blur(image, curves["blur"]),
+        perspective=perspective,
+        glare=estimate_glare(image, curves["glare"]),
+    )

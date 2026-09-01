@@ -269,3 +269,149 @@ def test_perspective_estimate_saturates_above_the_calibrated_range():
     estimate = estimate_perspective(quad, curve)
     assert estimate.saturated is True
     assert estimate.strength == pytest.approx(1.0)
+
+
+from hitcheck_trainer.augment.curves import CurveBundle
+from hitcheck_trainer.augment.degrade import add_glare
+from hitcheck_trainer.augment.descriptors import blockiness, bright_tail_mass
+from hitcheck_trainer.augment.measure import (
+    estimate_glare,
+    estimate_jpeg_blockiness,
+    profile_image,
+)
+
+
+def glare_curve(image=None, strengths=(0.0, 0.25, 0.5, 0.75, 1.0), seeds=range(48)):
+    image = image or card_like()
+    points = []
+    for strength in strengths:
+        masses = [
+            bright_tail_mass(add_glare(image, seed, strength)) for seed in seeds
+        ]
+        points.append((float(strength), float(sum(masses) / len(masses))))
+    return Curve(name="glare", parameter="strength", points=points)
+
+
+def blockiness_curve(image=None, strengths=(0.0, 0.25, 0.5, 0.75, 1.0)):
+    image = image or card_like()
+    points = []
+    for strength in strengths:
+        if strength <= 0:
+            compressed = image
+        else:
+            quality = int(max(8, 60 - 45 * min(strength, 1.0)))
+            buf = io.BytesIO()
+            image.save(buf, format="JPEG", quality=quality)
+            buf.seek(0)
+            compressed = Image.open(buf).convert("RGB")
+        points.append((float(strength), blockiness(compressed)))
+    return Curve(name="jpeg_blockiness", parameter="strength", points=points)
+
+
+@pytest.mark.parametrize("strength", [0.25, 0.5])
+def test_glare_estimate_recovers_a_known_strength_on_average(strength):
+    # add_glare draws a random ellipse centre AND both radii, so a single
+    # image's tail mass is one sample of a wide distribution.
+    #
+    # Stops at 0.5 for the same reason the perspective round-trip stops at
+    # 0.6: nearer the top of the curve a growing share of draws clamp and
+    # flag saturation, which biases the mean upward and would turn this
+    # into a test of the clamp. Saturation and ordering are covered
+    # separately below, and between them they pin the rest of the range.
+    image = card_like()
+    curve = glare_curve(image)
+    recovered = [
+        estimate_glare(add_glare(image, seed, strength), curve).strength
+        for seed in range(500, 580)
+    ]
+    assert sum(recovered) / len(recovered) == pytest.approx(strength, abs=0.12)
+
+
+def test_glare_estimate_saturates_above_full_strength():
+    # add_glare clamps with min(strength, 1.0), so 1.0 and 2.5 produce
+    # IDENTICAL pixels. Reporting 2.5 would be inventing information.
+    image = card_like()
+    curve = glare_curve(image)
+    estimate = estimate_glare(add_glare(image, 5, 2.5), curve)
+    assert estimate.saturated is True
+    assert estimate.strength == pytest.approx(1.0)
+
+
+def test_glare_estimate_is_ordered_across_strengths():
+    image = card_like()
+    curve = glare_curve(image)
+    estimates = [
+        sum(
+            estimate_glare(add_glare(image, seed, s), curve).strength
+            for seed in range(600, 620)
+        )
+        / 20
+        for s in (0.2, 0.4, 0.6, 0.8)
+    ]
+    assert estimates == sorted(estimates)
+
+
+@pytest.mark.parametrize("strength", [0.3, 0.6, 0.9])
+def test_blockiness_fallback_recovers_a_known_strength(strength):
+    image = card_like()
+    curve = blockiness_curve(image)
+    quality = int(max(8, 60 - 45 * min(strength, 1.0)))
+    buf = io.BytesIO()
+    image.save(buf, format="JPEG", quality=quality)
+    buf.seek(0)
+    estimate = estimate_jpeg_blockiness(Image.open(buf).convert("RGB"), curve)
+    assert estimate.strength == pytest.approx(strength, abs=0.15)
+
+
+def test_profile_image_prefers_the_header_over_the_blockiness_fallback():
+    # The header read is exact; blockiness is a calibrated approximation.
+    # Where both are available the exact one must win.
+    image = card_like()
+    bundle = CurveBundle(
+        generated_by="test", sample_images=1, seeds=1,
+        curves={
+            "blur": blur_curve(image),
+            "glare": glare_curve(image),
+            "perspective": perspective_curve(),
+            "jpeg_blockiness": blockiness_curve(image),
+        },
+    )
+    source = encoded_at(0.5, image)
+    profile = profile_image(image, quad=None, source=source, bundle=bundle)
+    assert profile.jpeg.strength == pytest.approx(0.5, abs=0.03)
+
+
+def test_profile_image_falls_back_to_blockiness_without_a_header():
+    image = card_like()
+    bundle = CurveBundle(
+        generated_by="test", sample_images=1, seeds=1,
+        curves={
+            "blur": blur_curve(image),
+            "glare": glare_curve(image),
+            "perspective": perspective_curve(),
+            "jpeg_blockiness": blockiness_curve(image),
+        },
+    )
+    quality = int(max(8, 60 - 45 * 0.6))
+    buf = io.BytesIO()
+    image.save(buf, format="JPEG", quality=quality)
+    buf.seek(0)
+    decoded = Image.open(buf).convert("RGB")  # no quantization attribute
+    profile = profile_image(decoded, quad=None, source=None, bundle=bundle)
+    assert profile.jpeg.strength == pytest.approx(0.6, abs=0.15)
+
+
+def test_profile_image_reports_perspective_unavailable_without_a_quad():
+    image = card_like()
+    bundle = CurveBundle(
+        generated_by="test", sample_images=1, seeds=1,
+        curves={
+            "blur": blur_curve(image),
+            "glare": glare_curve(image),
+            "perspective": perspective_curve(),
+            "jpeg_blockiness": blockiness_curve(image),
+        },
+    )
+    profile = profile_image(image, quad=None, source=None, bundle=bundle)
+    assert profile.perspective.strength is None
+    assert "perspective=unavailable" in profile.summary()
