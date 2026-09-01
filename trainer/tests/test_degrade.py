@@ -108,3 +108,31 @@ def test_jpeg_artifacts_change_pixels_but_keep_shape():
     out = jpeg_artifacts(img, seed=1, strength=1.0)
     assert out.size == img.size
     assert not np.array_equal(np.array(out), np.array(img))
+
+
+def test_warped_corners_is_the_identity_rectangle_at_zero_strength():
+    from hitcheck_trainer.augment.degrade import warped_corners
+
+    corners = warped_corners((120, 168), seed=4, strength=0.0)
+    assert np.allclose(corners, [[0, 0], [120, 0], [120, 168], [0, 168]])
+
+
+def test_warped_corners_stay_within_the_documented_jitter_bound():
+    from hitcheck_trainer.augment.degrade import warped_corners
+
+    w, h = 120, 168
+    strength = 0.5
+    corners = warped_corners((w, h), seed=11, strength=strength)
+    rest = np.float64([[0, 0], [w, 0], [w, h], [0, h]])
+    offset = np.abs(corners - rest) / np.float64([w, h])
+    assert offset.max() <= 0.12 * strength + 1e-9
+
+
+def test_warped_corners_is_deterministic_and_seed_dependent():
+    from hitcheck_trainer.augment.degrade import warped_corners
+
+    a = warped_corners((120, 168), seed=11, strength=0.5)
+    b = warped_corners((120, 168), seed=11, strength=0.5)
+    c = warped_corners((120, 168), seed=12, strength=0.5)
+    assert np.array_equal(a, b)
+    assert not np.array_equal(a, c)

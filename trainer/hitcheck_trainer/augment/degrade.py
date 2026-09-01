@@ -60,16 +60,34 @@ def _convolve_same(arr: np.ndarray, kernel: np.ndarray) -> np.ndarray:
     return np.tensordot(windows, kernel, axes=([3, 4], [0, 1]))
 
 
+def warped_corners(size: tuple[int, int], seed: int, strength: float) -> np.ndarray:
+    """Where `perspective_warp` sends the source rectangle's four corners.
+
+    Order is [top-left, top-right, bottom-right, bottom-left], matching
+    `corpus.crops.Quad`. `shift` bounds a UNIFORM DRAW, so this is one
+    sample of the jitter distribution and not the parameter itself --
+    anything inverting it must average over seeds.
+
+    Exposed so `augment.measure` and `augment.calibrate` can test and
+    calibrate the perspective inverse against the forward model rather
+    than against a second copy of this arithmetic.
+    """
+    w, h = size
+    corners = np.float64([[0, 0], [w, 0], [w, h], [0, h]])
+    if strength <= 0:
+        return corners
+    shift = 0.12 * strength
+    jitter = _rng(seed).uniform(-shift, shift, (4, 2)) * np.float64([w, h])
+    return corners + jitter
+
+
 def perspective_warp(image: Image.Image, seed: int, strength: float) -> Image.Image:
     """Simulate the card being held at an angle to the camera."""
     if strength <= 0:
         return image.convert("RGB")
-    rng = _rng(seed)
     w, h = image.size
-    shift = 0.12 * strength
     corners = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
-    jitter = rng.uniform(-shift, shift, (4, 2)) * np.float32([w, h])
-    target = corners + jitter
+    target = warped_corners((w, h), seed, strength)
 
     # Solve the 8-DOF transform mapping target -> source, which is the
     # direction PIL's PERSPECTIVE transform expects.
